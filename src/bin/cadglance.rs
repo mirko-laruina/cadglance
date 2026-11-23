@@ -1006,6 +1006,10 @@ impl eframe::App for App {
         if self.show_help {
             self.help_window(ctx, &pal);
         }
+        // With a drawing open the canvas keeps it on screen, so a failed open needs its own dialog.
+        if self.doc.is_some() && self.error.is_some() {
+            self.error_window(ctx, &pal);
+        }
     }
 }
 
@@ -1042,6 +1046,10 @@ impl App {
         }
         if pressed(Key::Escape) && self.show_help {
             self.show_help = false;
+            return;
+        }
+        if pressed(Key::Escape) && self.doc.is_some() && self.error.is_some() {
+            self.error = None;
             return;
         }
         let Some(d) = &mut self.doc else { return };
@@ -1554,6 +1562,29 @@ impl App {
                     });
                 });
         }
+    }
+
+    fn error_window(&mut self, ctx: &egui::Context, p: &Pal) {
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::new("error-dim")).fixed_pos(screen.min).order(egui::Order::Foreground).show(ctx, |ui| {
+            ui.allocate_exact_size(screen.size(), Sense::click());
+            ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(110));
+        });
+        let msg = self.error.clone().unwrap_or_default();
+        egui::Area::new(egui::Id::new("error")).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).order(egui::Order::Tooltip).show(ctx, |ui| {
+            p.group().inner_margin(egui::Margin::symmetric(18, 16)).corner_radius(10).show(ui, |ui| {
+                ui.set_width(460.0);
+                ui.label(RichText::new("Could not open the file").font(strong_font(16.0)).color(p.fg));
+                ui.add_space(6.0);
+                ui.label(RichText::new(msg).color(p.muted));
+                ui.add_space(10.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if ui.button("Close").clicked() {
+                        self.error = None;
+                    }
+                });
+            });
+        });
     }
 
     fn help_window(&mut self, ctx: &egui::Context, p: &Pal) {
