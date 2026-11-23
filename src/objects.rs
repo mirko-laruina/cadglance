@@ -216,6 +216,8 @@ pub struct EntCommon {
     pub invisible: bool,
     pub lineweight: u8,
     pub linetype_scale: f64,
+    /// Proxy graphics bytes (spec ch. 29), when the entity carries them.
+    pub proxy: Option<Vec<u8>>,
     /// R2000: previous/next entity handles are stored (the "nolinks" bit was 0).
     links: bool,
 }
@@ -224,10 +226,13 @@ pub struct EntCommon {
 pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
     let ver = f.ver;
     let r = &mut f.main;
+    let mut proxy = None;
     if r.b()? {
-        // proxy graphics
         let n = if ver <= Version::R2007 { r.rl()? as usize } else { r.bll()? as usize };
-        r.skip_bytes(n)?;
+        if n > r.remaining() / 8 {
+            return err(format!("proxy graphics of {n} bytes past end of object"));
+        }
+        proxy = Some((0..n).map(|_| r.rc()).collect::<Result<Vec<u8>>>()?);
     }
     let entmode = r.bb()?;
     let num_reactors = r.bl()? as u32;
@@ -272,6 +277,7 @@ pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
         invisible,
         lineweight,
         linetype_scale,
+        proxy,
         links,
     })
 }

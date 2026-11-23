@@ -119,6 +119,8 @@ pub enum Kind {
         frozen_layers: Vec<u64>,
         clip_boundary: u64,
     },
+    /// Type not decoded, drawn from its proxy graphics (spec ch. 29).
+    Proxy(Vec<crate::proxy::ProxyPrim>),
     /// Type not decoded; counted only.
     Other,
 }
@@ -358,6 +360,10 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
     };
 
     let exact = !matches!(kind, Kind::Other) && f.data_fully_read();
+    let kind = match (kind, &c.proxy) {
+        (Kind::Other, Some(g)) => Kind::Proxy(crate::proxy::parse(g)),
+        (k, _) => k,
+    };
     let h = ent_common_handles(f, &c)?;
     let mut kind = kind;
     match (&mut kind, tail_handles) {

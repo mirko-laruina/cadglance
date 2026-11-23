@@ -22,3 +22,4 @@ pub mod desktop;
 pub mod textlayout;
 pub mod pick;
 pub mod png;
+pub mod proxy;

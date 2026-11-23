@@ -691,7 +691,23 @@ fn add_entity(d: &Drawing, colors: &Colors, e: &Entity, in_model_space: bool, to
                 });
             }
         }
-        // shortcut: POINT, VIEWPORT and custom (AutoCAD Mechanical) entities are not drawn
+        Kind::Proxy(prims) => {
+            use crate::proxy::Prim;
+            for (pc, prim) in prims {
+                let Some(c) = pc.map_or(Some(c), |pc| colors.vertex(e.layer, pc)) else { continue };
+                match prim {
+                    Prim::Polyline { pts, closed } => s.polyline(pts, *closed, c),
+                    Prim::Fill(pts) => {
+                        let before = s.fill.len();
+                        hatch::fill_fans(std::slice::from_ref(pts), &mut s.fill);
+                        s.fill_cols.extend(std::iter::repeat_n(c, s.fill.len() - before));
+                    }
+                    Prim::Arc { center, radius, start, end } => s.polyline(&arc_points(*center, *radius, *start, *end, tol), false, c),
+                    Prim::Text(t) => s.text(t, clean_text(&t.value), c),
+                }
+            }
+        }
+        // shortcut: POINT, VIEWPORT and custom entities without proxy graphics are not drawn
         _ => {}
     }
 }
