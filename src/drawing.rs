@@ -348,7 +348,7 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
     let is_xref = r.b()?;
     let overlaid = r.b()?;
     r.b()?; // loaded
-    let owned = if ver >= Version::R2010 { r.count_in(8, hbudget)? } else { 0 };
+    let owned = if ver >= Version::R2007 { r.count_in(8, hbudget)? } else { 0 };
     let base = r.bd3()?;
     let base = [base[0], base[1]];
     tv(r, f.strings.as_mut(), ver)?; // xref path
@@ -359,7 +359,7 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
     tv(r, f.strings.as_mut(), ver)?; // description
     let preview = r.count_in(8, r.remaining())?;
     r.skip_bytes(preview)?;
-    if ver >= Version::R2010 {
+    if ver >= Version::R2007 {
         r.bs()?; // insert units
         r.b()?; // explodable
         r.rc()?; // block scaling
@@ -466,7 +466,7 @@ fn layout(f: &mut Frame) -> Result<Layout> {
     r.bs()?;
     r.bd()?;
     r.bd2()?;
-    if ver >= Version::R2010 {
+    if ver >= Version::R2007 {
         r.bs()?;
         r.bs()?;
         r.bs()?;
@@ -486,11 +486,11 @@ fn layout(f: &mut Frame) -> Result<Layout> {
     r.bd3()?;
     r.bd3()?;
     // spec says RL; AC1032 data has a BL. R2000 has no viewport list.
-    let nvp = if ver >= Version::R2010 { r.count_in(8, hbudget)? } else { 0 };
+    let nvp = if ver >= Version::R2007 { r.count_in(8, hbudget)? } else { 0 };
     let exact = f.data_fully_read();
 
     obj_common_handles(f, &c)?;
-    if ver >= Version::R2010 {
+    if ver >= Version::R2007 {
         f.href()?; // plot view
         f.href()?; // visual style
     }

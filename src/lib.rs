@@ -1,8 +1,9 @@
-//! Reader for DWG files: R2000 (AC1015) and R2010+ (AC1024, AC1027, AC1032), 2D subset.
+//! Reader for DWG files: R2000 (AC1015), R2007 (AC1021) and R2010+ (AC1024, AC1027, AC1032), 2D subset.
 //! Based only on the Open Design Alliance "Open Design Specification for .dwg files".
 
 pub mod bits;
 pub mod compress;
+pub mod compress21;
 pub mod container;
 pub mod crc;
 pub mod handles;

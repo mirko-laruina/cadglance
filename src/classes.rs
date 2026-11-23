@@ -28,9 +28,11 @@ pub fn parse_classes(data: &[u8], ver: Version) -> Result<Vec<Class>> {
     if ver == Version::R2000 {
         return parse_r2000(data, rl(16)? as usize);
     }
-    let bit_size = rl(24)? as usize;
-    // The size in bits counts from the bit-size field itself (byte 24); the bit data starts at byte 28.
-    let end = 24 * 8 + bit_size;
+    // R2007 has no size-high RL: the bit-size field is at byte 20 instead of 24.
+    let bits_at = if ver == Version::R2007 { 20 } else { 24 };
+    let bit_size = rl(bits_at)? as usize;
+    // The size in bits counts from the bit-size field itself; the bit data starts right after it.
+    let end = bits_at * 8 + bit_size;
     if end > data.len() * 8 {
         return err("classes: bit size past end of section");
     }
@@ -53,7 +55,7 @@ pub fn parse_classes(data: &[u8], ver: Version) -> Result<Vec<Class>> {
     }
     let mut strings = strings.ok_or_else(|| Error("classes: no string stream".into()))?;
 
-    let mut r = Bits::at(data, 28 * 8, main_end);
+    let mut r = Bits::at(data, (bits_at + 4) * 8, main_end);
     r.bs()?; // maximum class number
     r.rc()?;
     r.rc()?;

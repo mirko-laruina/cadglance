@@ -26,7 +26,8 @@ impl<'a> Frame<'a> {
         }
         let mut r = Bits::at(objects, offset * 8, objects.len() * 8);
         let size = r.ms()? as usize;
-        let handle_bits = r.umc()? as usize;
+        // R2010+: size of the handle stream. R2007: size of the data in bits, after the type.
+        let handle_bits = if ver >= Version::R2010 { Some(r.umc()? as usize) } else { None };
         let start = r.pos;
         let end = start + size * 8;
         let crc_at = end / 8;
@@ -35,13 +36,25 @@ impl<'a> Frame<'a> {
             .map(|s| u16::from_le_bytes([s[0], s[1]]))
             .ok_or_else(|| Error(format!("object at {offset:#x}: size {size} past end of section")))?;
         let crc_ok = crc8(0xC0C1, &objects[offset..crc_at]) == stored;
-        if handle_bits > size * 8 {
-            return err(format!("object at {offset:#x}: handle stream larger than object"));
-        }
-        let handle_start = end - handle_bits;
-
-        r.end = handle_start;
-        let type_code = r.ot()?;
+        let (type_code, handle_start) = match handle_bits {
+            Some(hb) => {
+                if hb > size * 8 {
+                    return err(format!("object at {offset:#x}: handle stream larger than object"));
+                }
+                r.end = end - hb;
+                (r.ot()?, end - hb)
+            }
+            None => {
+                r.end = end;
+                let t = r.bs()? as u16;
+                let hs = start + r.rl()? as usize;
+                if hs > end || hs < r.pos {
+                    return err(format!("object at {offset:#x}: data size does not fit"));
+                }
+                r.end = hs;
+                (t, hs)
+            }
+        };
         let handle = r.h()?.value;
         loop {
             let n = r.bs()? as u16 as usize;
@@ -213,7 +226,7 @@ pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
     let r = &mut f.main;
     if r.b()? {
         // proxy graphics
-        let n = if ver == Version::R2000 { r.rl()? as usize } else { r.bll()? as usize };
+        let n = if ver <= Version::R2007 { r.rl()? as usize } else { r.bll()? as usize };
         r.skip_bytes(n)?;
     }
     let entmode = r.bb()?;
@@ -237,9 +250,11 @@ pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
     let ltype_flags = r.bb()?;
     let plotstyle_flags = r.bb()?;
     let (mut material_flags, mut visual_styles) = (0, 0);
-    if ver >= Version::R2010 {
+    if ver >= Version::R2007 {
         material_flags = r.bb()?;
         r.rc()?; // shadow flags
+    }
+    if ver >= Version::R2010 {
         visual_styles = (r.b()? as u8) + (r.b()? as u8) + (r.b()? as u8);
     }
     let invisible = r.bs()? & 1 != 0;
