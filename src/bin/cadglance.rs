@@ -427,6 +427,19 @@ fn hline(ui: &mut Ui, p: &Pal) {
 }
 
 /// Two-column table like the web viewer's: muted keys, right-aligned values, row separators.
+/// Release year of a file format, from its version string.
+fn format_year(v: &str) -> &'static str {
+    match v {
+        "AC1015" => "2000",
+        "AC1018" => "2004",
+        "AC1021" => "2007",
+        "AC1024" => "2010",
+        "AC1027" => "2013",
+        "AC1032" => "2018",
+        _ => "unknown",
+    }
+}
+
 fn kv_table(ui: &mut Ui, p: &Pal, rows: &[(String, String)]) {
     for (k, v) in rows {
         hline(ui, p);
@@ -662,7 +675,9 @@ struct Doc {
     need_fit: bool,
     layers: Vec<LayerState>,
     layer_filter: String,
-    stats: String,
+    /// Drawing info rows: file, format, contents, and the static rendering numbers.
+    file_info: Vec<(String, String)>,
+    render_info: Vec<(String, String)>,
     last_sharp: Duration,
     selection: Option<Selection>,
     measures: Vec<[P2; 2]>,
@@ -748,6 +763,8 @@ struct App {
     tool: Tool,
     tab: Tab,
     show_help: bool,
+    /// Help dialog tab: false = usage and shortcuts, true = file and drawing info.
+    help_info: bool,
     show_recent: Option<Pos2>,
     adapter: String,
     samples: u32,
@@ -887,16 +904,24 @@ impl App {
             .collect();
         let _ = rs.device.poll(wgpu::PollType::wait_indefinitely());
         let name = l.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let stats = format!(
-            "{} segments · {} triangles · {} texts · {} layers\nDecode {:.2} s · scene {:.2} s · GPU and texts {:.2} s",
-            group_thousands(l.scene.segments_drawn),
-            group_thousands(l.scene.triangles_drawn),
-            group_thousands(gpu.text_boxes.len() as u64),
-            layers.len(),
-            l.t_load.as_secs_f64(),
-            l.t_scene.as_secs_f64(),
-            t.elapsed().as_secs_f64()
-        );
+        let d = &l.drawing;
+        let mb = std::fs::metadata(&l.path).map_or(0.0, |m| m.len() as f64 / 1e6);
+        let rows = |v: &[(&str, String)]| v.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<Vec<_>>();
+        let file_info = rows(&[
+            ("File", l.path.display().to_string()),
+            ("Size", format!("{mb:.1} MB")),
+            ("Format", format!("{} ({} format)", d.version, format_year(&d.version))),
+            ("Objects", group_thousands(d.types.len() as u64)),
+            ("Entities", group_thousands(d.entities.len() as u64)),
+            ("Layers · blocks · layouts", format!("{} · {} · {}", d.layers.len(), d.blocks.len(), d.layouts.len())),
+            ("Objects not decoded", group_thousands(d.errors.len() as u64)),
+        ]);
+        let render_info = rows(&[
+            ("Segments", group_thousands(l.scene.segments_drawn)),
+            ("Triangles", group_thousands(l.scene.triangles_drawn)),
+            ("Texts", group_thousands(gpu.text_boxes.len() as u64)),
+            ("Decode · scene · GPU", format!("{:.2} s · {:.2} s · {:.2} s", l.t_load.as_secs_f64(), l.t_scene.as_secs_f64(), t.elapsed().as_secs_f64())),
+        ]);
         if let Some(old) = self.doc.take().and_then(|d| d.tex) {
             rs.renderer.write().free_texture(&old);
         }
@@ -919,7 +944,8 @@ impl App {
             need_fit: true,
             layers,
             layer_filter: String::new(),
-            stats,
+            file_info,
+            render_info,
             last_sharp: Duration::ZERO,
             selection: None,
             measures: Vec::new(),
@@ -1181,7 +1207,7 @@ impl App {
                         self.capturing = true;
                         ctx.request_repaint();
                     }
-                    if tool_button(ui, p, Some(Icon::Help), None, self.show_help, "Commands and shortcuts (F1, ?)").clicked() {
+                    if tool_button(ui, p, Some(Icon::Help), None, self.show_help, "Commands and drawing info (F1, ?)").clicked() {
                         self.show_help = !self.show_help;
                     }
                 });
@@ -1521,8 +1547,8 @@ impl App {
     }
 
     fn status(&mut self, ctx: &egui::Context, p: &Pal) {
-        // Left: coordinates and snap. Right: redraw time and graphics card. The hint goes between
-        // them only when it fits (positions from the previous frame), so nothing overlaps.
+        // Left: coordinates and snap. The hint goes to their right only when it fits, so nothing
+        // overlaps. Redraw time and graphics card are in the help dialog (File and drawing).
         let left = egui::Area::new(egui::Id::new("status")).anchor(Align2::LEFT_BOTTOM, vec2(12.0, -12.0)).movable(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if let Some(d) = &self.doc {
@@ -1547,23 +1573,11 @@ impl App {
                 });
             });
         });
-        let right = egui::Area::new(egui::Id::new("status-right")).anchor(Align2::RIGHT_BOTTOM, vec2(-12.0, -12.0)).movable(false).show(ctx, |ui| {
-            p.group().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                let s = match &self.doc {
-                    Some(d) => format!("{:.0} ms", d.last_sharp.as_secs_f64() * 1000.0),
-                    None => String::new(),
-                };
-                let gpu = self.adapter.split(" · ").last().unwrap_or("").to_string();
-                let text = if s.is_empty() { gpu } else { format!("{s}  ·  {gpu}") };
-                ui.label(RichText::new(text).size(11.5).color(p.muted))
-                    .on_hover_text(format!("Last sharp redraw time\n{}", self.adapter));
-            });
-        });
-        self.status_top = left.response.rect.top().min(right.response.rect.top());
+        self.status_top = left.response.rect.top();
         let hint = self.tool.hint();
         let galley = ctx.fonts_mut(|f| f.layout_no_wrap(hint.to_string(), FontId::proportional(13.0), p.muted));
         let x = left.response.rect.right() + 6.0;
-        let fits = x + galley.size().x + 20.0 + 6.0 <= right.response.rect.left();
+        let fits = x + galley.size().x + 20.0 + 6.0 <= ctx.content_rect().right() - 12.0;
         if fits {
             egui::Area::new(egui::Id::new("status-hint"))
                 .fixed_pos(pos2(x, left.response.rect.bottom() - (galley.size().y + 12.0)))
@@ -1613,28 +1627,47 @@ impl App {
         egui::Area::new(egui::Id::new("help")).anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0)).order(egui::Order::Tooltip).show(ctx, |ui| {
             p.group().inner_margin(egui::Margin::symmetric(18, 16)).corner_radius(10).show(ui, |ui| {
                 ui.set_width(540.0);
-                ui.label(RichText::new("Commands").font(strong_font(16.0)).color(p.fg));
+                ui.horizontal(|ui| {
+                    for (tab, title) in [(false, "Usage"), (true, "File and drawing")] {
+                        let on = self.help_info == tab;
+                        let t = RichText::new(title).font(strong_font(15.0)).color(if on { p.fg } else { p.muted });
+                        if ui.selectable_label(on, t).clicked() {
+                            self.help_info = tab;
+                        }
+                    }
+                });
                 ui.add_space(6.0);
-                let rows: Vec<(String, String)> = [
-                    ("Open a file", "Ctrl+O · drop a file on the window · Recent"),
-                    ("Pan", "drag · middle or right button"),
-                    ("Zoom", "wheel · Shift+drag a rectangle · Z"),
-                    ("Fit to window", "double click · F"),
-                    ("Element info", "I, then click"),
-                    ("Distance", "M, two clicks · Shift = orthogonal"),
-                    ("Area", "A, click the vertices · Enter or double click closes · ⌫ removes the last"),
-                    ("Snap to endpoints and midpoints", "S"),
-                    ("Search text", "/ or Ctrl+F · Enter next · Shift+Enter previous"),
-                    ("Side panel", "L"),
-                    ("Cancel", "Esc · Del clears all measurements"),
-                ]
-                .iter()
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect();
-                kv_table(ui, p, &rows);
-                if let Some(d) = &self.doc {
-                    section(ui, p, "Drawing");
-                    ui.label(RichText::new(format!("{}\n{}", d.name, d.stats)).color(p.muted));
+                if !self.help_info {
+                    let rows: Vec<(String, String)> = [
+                        ("Open a file", "Ctrl+O · drop a file on the window · Recent"),
+                        ("Pan", "drag · middle or right button"),
+                        ("Zoom", "wheel · Shift+drag a rectangle · Z"),
+                        ("Fit to window", "double click · F"),
+                        ("Element info", "I, then click"),
+                        ("Distance", "M, two clicks · Shift = orthogonal"),
+                        ("Area", "A, click the vertices · Enter or double click closes · ⌫ removes the last"),
+                        ("Snap to endpoints and midpoints", "S"),
+                        ("Search text", "/ or Ctrl+F · Enter next · Shift+Enter previous"),
+                        ("Side panel", "L"),
+                        ("Cancel", "Esc · Del clears all measurements"),
+                    ]
+                    .iter()
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .collect();
+                    kv_table(ui, p, &rows);
+                } else {
+                    if let Some(d) = &self.doc {
+                        section(ui, p, "File");
+                        kv_table(ui, p, &d.file_info);
+                    }
+                    section(ui, p, "Rendering");
+                    let mut rows = self.doc.as_ref().map_or_else(Vec::new, |d| d.render_info.clone());
+                    if let Some(d) = &self.doc {
+                        rows.push(("Last sharp redraw".into(), format!("{:.0} ms", d.last_sharp.as_secs_f64() * 1000.0)));
+                    }
+                    rows.push(("Graphics".into(), self.adapter.clone()));
+                    rows.push(("Antialiasing".into(), format!("MSAA {}x", self.samples)));
+                    kv_table(ui, p, &rows);
                 }
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -2032,6 +2065,7 @@ fn main() {
                 tool: Tool::Info,
                 tab: Tab::Props,
                 show_help: false,
+                help_info: false,
                 show_recent: None,
                 adapter,
                 samples,
