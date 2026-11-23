@@ -348,7 +348,7 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
     let is_xref = r.b()?;
     let overlaid = r.b()?;
     r.b()?; // loaded
-    let owned = if ver >= Version::R2007 { r.count_in(8, hbudget)? } else { 0 };
+    let owned = if ver >= Version::R2004 { r.count_in(8, hbudget)? } else { 0 };
     let base = r.bd3()?;
     let base = [base[0], base[1]];
     tv(r, f.strings.as_mut(), ver)?; // xref path
@@ -392,9 +392,9 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
 }
 
 /// Table entry flags after the name. The spec lists `64-flag B, xrefindex+1 BS, Xdep B`;
-/// R2000 has all three, AC1032 data has only the BS (checked by hand on LAYER and BLOCK_HEADER).
+/// R2000 and R2004 have all three; R2007+ data has only the BS (checked by hand on AC1032).
 fn table_entry_flags(r: &mut crate::bits::Bits, ver: Version) -> Result<()> {
-    if ver == Version::R2000 {
+    if ver <= Version::R2004 {
         r.b()?; // 64-flag
         r.bs()?; // xref index + 1
         r.b()?; // xdep
@@ -466,7 +466,7 @@ fn layout(f: &mut Frame) -> Result<Layout> {
     r.bs()?;
     r.bd()?;
     r.bd2()?;
-    if ver >= Version::R2007 {
+    if ver >= Version::R2004 {
         r.bs()?;
         r.bs()?;
         r.bs()?;
@@ -486,12 +486,14 @@ fn layout(f: &mut Frame) -> Result<Layout> {
     r.bd3()?;
     r.bd3()?;
     // spec says RL; AC1032 data has a BL. R2000 has no viewport list.
-    let nvp = if ver >= Version::R2007 { r.count_in(8, hbudget)? } else { 0 };
+    let nvp = if ver >= Version::R2004 { r.count_in(8, hbudget)? } else { 0 };
     let exact = f.data_fully_read();
 
     obj_common_handles(f, &c)?;
-    if ver >= Version::R2007 {
+    if ver >= Version::R2004 {
         f.href()?; // plot view
+    }
+    if ver >= Version::R2007 {
         f.href()?; // visual style
     }
     let block_record = f.href()?;

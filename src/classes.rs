@@ -28,6 +28,9 @@ pub fn parse_classes(data: &[u8], ver: Version) -> Result<Vec<Class>> {
     if ver == Version::R2000 {
         return parse_r2000(data, rl(16)? as usize);
     }
+    if ver == Version::R2004 {
+        return parse_r2004(data, rl(16)? as usize);
+    }
     // R2007 has no size-high RL: the bit-size field is at byte 20 instead of 24.
     let bits_at = if ver == Version::R2007 { 20 } else { 24 };
     let bit_size = rl(bits_at)? as usize;
@@ -96,6 +99,34 @@ fn parse_r2000(data: &[u8], size: usize) -> Result<Vec<Class>> {
         let dxf_name = r.tv8()?;
         r.b()?; // was a zombie
         let item_class = r.bs()? as u16;
+        out.push(Class { number, dxf_name, cpp_name, is_entity: item_class == 0x1F2 });
+    }
+    Ok(out)
+}
+
+/// R2004 (spec 10.2): like R2000 after a small preamble, with 5 BL counters per class.
+fn parse_r2004(data: &[u8], size: usize) -> Result<Vec<Class>> {
+    let end = (20 + size) * 8;
+    if end > data.len() * 8 {
+        return err("classes: size past end of section");
+    }
+    let mut r = Bits::at(data, 20 * 8, end);
+    r.bs()?; // maximum class number
+    r.rc()?;
+    r.rc()?;
+    r.b()?;
+    let mut out = Vec::new();
+    while r.end - r.pos >= 8 {
+        let number = r.bs()? as u16;
+        r.bs()?; // proxy flags
+        let _app = r.tv8()?;
+        let cpp_name = r.tv8()?;
+        let dxf_name = r.tv8()?;
+        r.b()?; // was a zombie
+        let item_class = r.bs()? as u16;
+        for _ in 0..5 {
+            r.bl()?; // instance count, dwg version, maintenance version, 2 unknown
+        }
         out.push(Class { number, dxf_name, cpp_name, is_entity: item_class == 0x1F2 });
     }
     Ok(out)

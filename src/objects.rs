@@ -70,8 +70,8 @@ impl<'a> Frame<'a> {
             .checked_sub(1)
             .ok_or_else(|| Error(format!("object at {offset:#x}: empty data stream")))?;
         let mut strings = None;
-        let mut main_end = flag_pos;
-        if Bits::at(objects, flag_pos, handle_start).b()? {
+        let mut main_end = if ver >= Version::R2007 { flag_pos } else { handle_start };
+        if ver >= Version::R2007 && Bits::at(objects, flag_pos, handle_start).b()? {
             let mut p = flag_pos.checked_sub(16).ok_or_else(|| Error("string stream size underflow".into()))?;
             let mut len = Bits::at(objects, p, p + 16).rs()? as usize;
             if len & 0x8000 != 0 {
@@ -137,7 +137,7 @@ impl<'a> Frame<'a> {
         })
     }
 
-    /// Next TV string: from the string stream (R2007+) or inline in the data stream (R2000).
+    /// Next TV string: from the string stream (R2007+) or inline in the data stream (R2000, R2004).
     pub fn tv(&mut self) -> Result<String> {
         tv(&mut self.main, self.strings.as_mut(), self.ver)
     }
@@ -158,11 +158,11 @@ impl<'a> Frame<'a> {
 }
 
 /// Next TV string for prescriptions that hold the data stream `r` and the string stream `s` apart.
-/// R2010+ without a string stream: every string is empty.
+/// R2007+ without a string stream: every string is empty.
 pub fn tv(r: &mut Bits, s: Option<&mut Bits>, ver: Version) -> Result<String> {
     match s {
         Some(s) => s.tu(),
-        None if ver == Version::R2000 => r.tv8(),
+        None if ver <= Version::R2004 => r.tv8(),
         None => Ok(String::new()),
     }
 }

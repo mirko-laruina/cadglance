@@ -25,11 +25,11 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error(msg.into()))
 }
 
-/// File format versions this reader knows, in release order. R2004 is not supported, so a field
-/// marked "R2004+" in the spec applies to R2007 and later here.
+/// File format versions this reader knows, in release order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Version {
     R2000,
+    R2004,
     R2007,
     R2010,
     R2013,
@@ -104,11 +104,12 @@ impl<'a> Container<'a> {
         let version = String::from_utf8_lossy(&raw[..6]).into_owned();
         let ver = match version.as_str() {
             "AC1015" => Version::R2000,
+            "AC1018" => Version::R2004,
             "AC1021" => Version::R2007,
             "AC1024" => Version::R2010,
             "AC1027" => Version::R2013,
             "AC1032" => Version::R2018,
-            _ => return err(format!("unsupported version {version} (supported: AC1015, AC1021, AC1024, AC1027, AC1032)")),
+            _ => return err(format!("unsupported version {version} (supported: AC1015, AC1018, AC1021, AC1024, AC1027, AC1032)")),
         };
         let maint_version = raw[0x0B];
         if ver == Version::R2000 {

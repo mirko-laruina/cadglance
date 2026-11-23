@@ -1,4 +1,4 @@
-//! 2D entity prescriptions (ODA spec 20.4), R2000, R2007 and R2010+. Z values are read and dropped.
+//! 2D entity prescriptions (ODA spec 20.4), R2000 to R2018. Z values are read and dropped.
 
 use crate::bits::Bits;
 use crate::container::{Result, Version};
@@ -193,7 +193,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             r.bt()?;
             r.bd()?; // elevation
             let extrusion = r.be()?;
-            let owned = if ver >= Version::R2007 { r.count_in(8, hbudget)? } else { 0 };
+            let owned = if ver >= Version::R2004 { r.count_in(8, hbudget)? } else { 0 };
             tail_handles = TailHandles::Owned { owned };
             Kind::Polyline2d { closed: flags & 1 != 0, vertices: Vec::new(), extrusion }
         }
@@ -266,7 +266,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             r.bs()?;
             r.bd()?;
             r.b()?;
-            if ver >= Version::R2007 {
+            if ver >= Version::R2004 {
                 let bg = r.bl()?;
                 if bg & 0x11 != 0 {
                     r.bd()?; // scale factor (spec says BL; BD matches the data)
@@ -325,7 +325,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             let rotation = r.bd()?;
             let extrusion = r.bd3()?;
             let has_attribs = r.b()?;
-            let owned = if has_attribs && ver >= Version::R2007 { r.count_in(8, hbudget)? } else { 0 };
+            let owned = if has_attribs && ver >= Version::R2004 { r.count_in(8, hbudget)? } else { 0 };
             let (mut cols, mut rows, mut col_spacing, mut row_spacing) = (1u16, 1u16, 0.0, 0.0);
             if code == 8 {
                 cols = r.bs()? as u16;
@@ -614,7 +614,7 @@ fn dimension(r: &mut Bits, code: u16, s: Option<&mut Bits>, ver: Version) -> Res
 
 fn hatch(r: &mut Bits, mut s: Option<&mut Bits>, ver: Version, tail: &mut TailHandles, hbudget: usize) -> Result<Kind> {
     let mut gradient = 0;
-    if ver >= Version::R2007 {
+    if ver >= Version::R2004 {
         gradient = r.bl()?;
         r.bl()?;
         r.bd()?;
@@ -776,8 +776,10 @@ fn viewport(r: &mut Bits, s: Option<&mut Bits>, ver: Version, tail: &mut TailHan
     r.bd3()?;
     r.bd()?;
     r.bs()?;
-    if ver >= Version::R2007 {
+    if ver >= Version::R2004 {
         r.bs()?; // shadeplot mode
+    }
+    if ver >= Version::R2007 {
         r.b()?;
         r.rc()?;
         r.bd()?;
