@@ -754,6 +754,8 @@ struct App {
     font: Option<ab_glyph::FontArc>,
     zoom_rect: Option<(Pos2, Pos2)>,
     screenshot_rect: Option<Rect>,
+    /// PNG export: the UI around the drawing is hidden until the screenshot arrives.
+    capturing: bool,
     focus_search: bool,
     styled_light: Option<bool>,
     /// Top of the bottom bar in the previous frame (0 = unknown).
@@ -991,12 +993,23 @@ impl eframe::App for App {
             })
         });
         if let (Some(img), Some(r)) = (shot, self.screenshot_rect.take()) {
+            self.capturing = false;
             save_png(&img, r, ctx.pixels_per_point(), self.doc.as_ref().map_or("view", |d| d.name.as_str()));
         }
+        self.capturing &= self.doc.is_some();
 
         self.keyboard(ctx);
         let bg = Color32::from_rgb(self.settings.bg[0], self.settings.bg[1], self.settings.bg[2]);
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ctx, |ui| self.canvas(ui, ctx, &rs, &pal));
+        if self.capturing {
+            // Ask for the screenshot only from a frame drawn without the UI; keep hiding it until the image arrives.
+            if self.screenshot_rect.is_none() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                self.screenshot_rect = self.doc.as_ref().map(|d| d.canvas);
+            }
+            ctx.request_repaint();
+            return;
+        }
         self.toolbars(ctx, &pal);
         if self.settings.panel && self.doc.is_some() {
             self.side_panel(ctx, &rs, &pal);
@@ -1165,8 +1178,8 @@ impl App {
                         self.settings.save();
                     }
                     if tool_button(ui, p, Some(Icon::Png), Some("PNG"), false, "Save the view as a PNG image").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
-                        self.screenshot_rect = self.doc.as_ref().map(|d| d.canvas);
+                        self.capturing = true;
+                        ctx.request_repaint();
                     }
                     if tool_button(ui, p, Some(Icon::Help), None, self.show_help, "Commands and shortcuts (F1, ?)").clicked() {
                         self.show_help = !self.show_help;
@@ -1721,9 +1734,10 @@ impl App {
         let layers_on: Vec<bool> = d.layers.iter().map(|l| l.look.on).collect();
         let visible = move |l: u16| l == cadglance::geom::NO_LAYER || layers_on.get(l as usize).copied().unwrap_or(true);
 
-        // hover: coordinates, and snap preview for the measuring tools
+        // hover: coordinates, and snap preview for the measuring tools (none in a PNG export)
         let measuring = matches!(self.tool, Tool::Measure | Tool::Area);
-        d.hover = resp.hover_pos().map(|hp| {
+        let pointer = if self.capturing { None } else { resp.hover_pos() };
+        d.hover = pointer.map(|hp| {
             let w = xf.to_world(hp);
             if measuring && self.settings.snap && !resp.dragged() {
                 if let (_, Some(s)) = d.picker.pick(&d.scene, w, tol, &visible, false) {
@@ -2024,6 +2038,7 @@ fn main() {
                 font: None,
                 zoom_rect: None,
                 screenshot_rect: None,
+                capturing: false,
                 focus_search: false,
                 styled_light: None,
                 status_top: 0.0,
