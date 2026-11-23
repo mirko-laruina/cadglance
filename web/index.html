@@ -1,0 +1,1427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CadGlance</title>
+<style>
+  :root {
+    --bg: #111418; --fg: #d8dde3; --muted: #8b95a1; --panel: #171b20; --panel2: #1e2329;
+    --line: #2c333b; --accent: #4ea1ff; --accent-fg: #fff; --danger: #ff6b6b;
+    --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-theme="light"] {
+    --fg: #1d232a; --muted: #5d6874; --panel: #ffffff; --panel2: #f2f4f7; --line: #d5dbe2;
+    --accent: #1f6fd6; --shadow: 0 6px 24px rgba(20, 30, 40, 0.15);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; }
+  #c { touch-action: none; cursor: default; }
+  #c[data-tool="measure"], #c[data-tool="area"], #c[data-tool="zoom"] { cursor: crosshair; }
+  #c.drag { cursor: grabbing; }
+  #ov { pointer-events: none; }
+  button, input, select { font: inherit; color: inherit; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 1px solid transparent;
+    border-radius: 6px; padding: 5px 8px; cursor: pointer; color: var(--fg); white-space: nowrap; }
+  .btn:hover { background: var(--panel2); }
+  .btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  .btn.outline { border-color: var(--line); }
+  .btn svg { width: 16px; height: 16px; flex: none; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 4px; }
+
+  #top { position: fixed; left: 12px; right: 12px; top: 12px; display: flex; gap: 8px; align-items: center;
+    pointer-events: none; }
+  #top > * { pointer-events: auto; }
+  .group { display: flex; align-items: center; gap: 2px; padding: 4px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+  #searchBox { flex: 0 1 380px; }
+  #q { flex: 1; min-width: 80px; background: transparent; border: 0; padding: 5px 6px; outline: none; }
+  #qn { color: var(--muted); font-variant-numeric: tabular-nums; padding: 0 4px; white-space: nowrap; }
+  .spacer { flex: 1; }
+
+  #side { position: fixed; right: 12px; top: 64px; bottom: 52px; width: 330px; display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+  #side[hidden] { display: none; }
+  #tabs { display: flex; gap: 2px; padding: 4px; border-bottom: 1px solid var(--line); }
+  #tabs .btn { flex: 1; justify-content: center; }
+  .pane { flex: 1; overflow: auto; padding: 10px 12px; }
+  .pane[hidden] { display: none; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  h3 { font-size: 12px; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .muted { color: var(--muted); }
+  table.kv { width: 100%; border-collapse: collapse; }
+  table.kv td { padding: 4px 0; vertical-align: top; border-top: 1px solid var(--line); }
+  table.kv td:first-child { color: var(--muted); padding-right: 10px; white-space: nowrap; }
+  table.kv td:last-child { text-align: right; font-variant-numeric: tabular-nums; word-break: break-word; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 0; }
+  .field label { flex: 1; }
+  input[type="color"] { width: 34px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 4px;
+    background: transparent; cursor: pointer; }
+  input[type="text"], input[type="search"] { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 8px; }
+  .themes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .theme { border: 1px solid var(--line); border-radius: 6px; padding: 8px; cursor: pointer; text-align: left;
+    background: var(--panel2); }
+  .theme[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .theme .sw { display: block; height: 22px; border-radius: 4px; margin-bottom: 6px; border: 1px solid var(--line); }
+  #layerList { list-style: none; margin: 6px 0 0; padding: 0; }
+  #layerList li { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-top: 1px solid var(--line); }
+  #layerList li.off .lname { color: var(--muted); text-decoration: line-through; }
+  #layerList .lname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #layerList .mini { padding: 2px 5px; font-size: 12px; }
+  .list { list-style: none; padding: 0; margin: 0; }
+  .list li { display: flex; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line);
+    font-variant-numeric: tabular-nums; }
+  .list li span { flex: 1; }
+
+  #status { position: fixed; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center;
+    pointer-events: none; }
+  #status > * { pointer-events: auto; }
+  #coords, #hint { padding: 5px 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #hint { color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+
+  #help { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); }
+  #help[hidden] { display: none; }
+  #help .card { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; padding: 16px 18px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+  kbd { display: inline-block; min-width: 20px; text-align: center; padding: 1px 5px; border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 4px; background: var(--panel2); font: 12px ui-monospace, monospace; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .label { display: none; }
+    #side { left: 12px; right: 12px; width: auto; top: auto; height: 46vh; }
+    #searchBox { flex: 1 1 160px; }
+    #top { flex-wrap: wrap; }
+    #hint { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c" data-tool="info"></canvas>
+<canvas id="ov"></canvas>
+<div id="loading">Loading drawing…</div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-info" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M4 3l7 17 2.5-7.5L21 10z"/></symbol>
+  <symbol id="i-measure" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l2 2M13 7l2 2"/></symbol>
+  <symbol id="i-area" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M4 19l3-13 11 2 2 9z"/></symbol>
+  <symbol id="i-zoom" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M3 3h7M3 3v7M21 21h-7M21 21v-7M8 8l8 8"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M3 4h18v16H3zM15 4v16"/></symbol>
+  <symbol id="i-png" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M12 3v12M7 10l5 5 5-5M4 20h16"/></symbol>
+  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path fill="none" stroke="currentColor" stroke-width="2" d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.7M12 17h.01"/></symbol>
+  <symbol id="i-snap" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M6 6h12v12H6zM12 2v4M12 18v4M2 12h4M18 12h4"/></symbol>
+  <symbol id="i-clear" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+</svg>
+
+<div id="top">
+  <div class="group" role="toolbar" aria-label="Tools">
+    <button class="btn" data-tool="info" aria-pressed="true" title="Select an element and read its measurements (I)"><svg><use href="#i-info"/></svg><span class="label">Info</span></button>
+    <button class="btn" data-tool="measure" aria-pressed="false" title="Distance between two points (M)"><svg><use href="#i-measure"/></svg><span class="label">Distance</span></button>
+    <button class="btn" data-tool="area" aria-pressed="false" title="Area and perimeter of a polygon (A)"><svg><use href="#i-area"/></svg><span class="label">Area</span></button>
+    <button class="btn" data-tool="zoom" aria-pressed="false" title="Zoom to a rectangle (Z, or Shift+drag)"><svg><use href="#i-zoom"/></svg><span class="label">Zoom</span></button>
+    <span class="sep"></span>
+    <button class="btn" id="bFit" title="Fit the drawing to the window (F)"><svg><use href="#i-fit"/></svg><span class="label">Fit</span></button>
+    <button class="btn" id="bClear" title="Clear measurements and areas (Del)"><svg><use href="#i-clear"/></svg><span class="label">Clear</span></button>
+  </div>
+  <div class="group" id="searchBox" role="search">
+    <input id="q" type="search" placeholder="Search text…  ( / )" aria-label="Search text" autocomplete="off">
+    <span id="qn" aria-live="polite"></span>
+    <button class="btn" id="qPrev" title="Previous (Shift+Enter)" aria-label="Previous result">◀</button>
+    <button class="btn" id="qNext" title="Next (Enter)" aria-label="Next result">▶</button>
+  </div>
+  <span class="spacer"></span>
+  <div class="group">
+    <button class="btn" id="bPanel" aria-pressed="true" title="Side panel (L)"><svg><use href="#i-panel"/></svg><span class="label">Panel</span></button>
+    <button class="btn" id="bPng" title="Save the view as a PNG image"><svg><use href="#i-png"/></svg><span class="label">PNG</span></button>
+    <button class="btn" id="bHelp" title="Commands and shortcuts (?)" aria-label="Help"><svg><use href="#i-help"/></svg></button>
+  </div>
+</div>
+
+<aside id="side" aria-label="Side panel">
+  <div id="tabs" role="tablist">
+    <button class="btn" role="tab" data-tab="props" aria-pressed="true">Properties</button>
+    <button class="btn" role="tab" data-tab="layers" aria-pressed="false">Layers</button>
+    <button class="btn" role="tab" data-tab="look" aria-pressed="false">Appearance</button>
+  </div>
+  <section class="pane" id="pane-props">
+    <div id="props"><p class="muted">Click an element of the drawing to see its type, layer and measurements.</p></div>
+    <div id="measures"></div>
+  </section>
+  <section class="pane" id="pane-layers" hidden>
+    <input id="lf" type="search" placeholder="Filter layers…" aria-label="Filter layers" style="width:100%">
+    <div class="row" style="margin-top:8px">
+      <button class="btn outline" id="lAll">All</button>
+      <button class="btn outline" id="lNone">None</button>
+      <button class="btn outline" id="lInv">Invert</button>
+      <span class="muted" id="lCount"></span>
+    </div>
+    <ul id="layerList"></ul>
+  </section>
+  <section class="pane" id="pane-look" hidden>
+    <h3>Theme</h3>
+    <div class="themes" id="themes"></div>
+    <h3>Colors</h3>
+    <div class="field"><label for="cBg">Background</label><input type="color" id="cBg"></div>
+    <div class="field"><label for="cMono">Lines (monochrome themes)</label><input type="color" id="cMono"></div>
+    <div class="field"><label for="cSel">Highlight and measurements</label><input type="color" id="cSel"></div>
+    <div class="field"><label for="cAdapt">Darken light colors on a light background</label><input type="checkbox" id="cAdapt"></div>
+    <h3>Elements</h3>
+    <div class="field"><label for="eText">Texts</label><input type="checkbox" id="eText"></div>
+    <div class="field"><label for="eFill">Fills (solid hatches, solids)</label><input type="checkbox" id="eFill"></div>
+    <p class="muted">Colors of single layers are changed in the Layers tab.</p>
+    <button class="btn outline" id="bReset">Restore default settings</button>
+  </section>
+</aside>
+
+<div id="status">
+  <div class="group" id="coords" title="Cursor coordinates (model space)">X —   Y —</div>
+  <div class="group"><button class="btn" id="bSnap" aria-pressed="true" title="Snap to endpoints and midpoints (S)"><svg><use href="#i-snap"/></svg><span class="label">Snap</span></button></div>
+  <div class="group" id="hint" aria-live="polite"></div>
+</div>
+
+<div id="help" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+  <div class="card">
+    <h2 id="helpTitle">Commands</h2>
+    <table class="kv">
+      <tr><td>Pan</td><td>drag · middle or right button</td></tr>
+      <tr><td>Zoom</td><td>wheel · <kbd>Shift</kbd>+drag a rectangle · <kbd>Z</kbd></td></tr>
+      <tr><td>Fit to window</td><td>double click · <kbd>F</kbd></td></tr>
+      <tr><td>Element info</td><td><kbd>I</kbd>, then click</td></tr>
+      <tr><td>Distance</td><td><kbd>M</kbd>, two clicks · <kbd>Shift</kbd> = orthogonal</td></tr>
+      <tr><td>Area</td><td><kbd>A</kbd>, click the vertices · <kbd>Enter</kbd> or double click closes · <kbd>⌫</kbd> removes the last</td></tr>
+      <tr><td>Snap to endpoints and midpoints</td><td><kbd>S</kbd></td></tr>
+      <tr><td>Search text</td><td><kbd>/</kbd> · <kbd>Enter</kbd> next · <kbd>Shift</kbd>+<kbd>Enter</kbd> previous</td></tr>
+      <tr><td>Side panel</td><td><kbd>L</kbd></td></tr>
+      <tr><td>Cancel</td><td><kbd>Esc</kbd> · <kbd>Del</kbd> clears all measurements</td></tr>
+    </table>
+    <h3>Drawing</h3>
+    <div id="stats" class="muted" style="white-space:pre-line"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn outline" id="helpClose">Close</button></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// Rendering: the scene (fills, lines, texts) is drawn into an offscreen texture larger than the
+// screen ("cache"). Pan and zoom only move/scale that texture; a sharp redraw happens
+// SHARP_DELAY_MS after the last input. UI (selection, measures, search) is a 2D overlay.
+// Layer visibility/colors and the color theme are applied in the shaders (layer table texture).
+const SHARP_DELAY_MS = 150;
+const CACHE_MARGIN = 2;
+const ZOOM_SPEED = 0.0015;
+const ZOOM_EASE = 0.35;
+const PICK_PX = 8;             // pick and snap radius in CSS pixels
+const NO_LAYER = 65535;
+const STORE_KEY = "cadglance.settings.v1";
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("c"), ov = $("ov"), octx = ov.getContext("2d");
+const gl = canvas.getContext("webgl2", { antialias: false });
+const dpr = () => window.devicePixelRatio || 1;
+if (!gl) { $("loading").textContent = "WebGL2 is not available in this browser."; throw new Error("no webgl2"); }
+
+// ---------- settings ----------
+const THEMES = {
+  dark:      { name: "Dark",         bg: "#111418", mono: false },
+  light:     { name: "Light",        bg: "#ffffff", mono: false },
+  monoDark:  { name: "Mono dark",   bg: "#111418", mono: true, ink: "#e8ebef" },
+  monoLight: { name: "Mono light",  bg: "#ffffff", mono: true, ink: "#1a1a1a" },
+};
+const DEFAULTS = { theme: "dark", bg: "#111418", mono: "#e8ebef", sel: "#ffb020", adapt: true,
+  texts: true, fills: true, snap: true, panel: true, tab: "props", layers: {} };
+let settings = structuredClone(DEFAULTS);
+try { Object.assign(settings, JSON.parse(localStorage.getItem(STORE_KEY) || "{}")); } catch { /* storage unavailable */ }
+function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch { /* ignore */ } }
+
+const hex2rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const rgb2hex = (c) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+const lum = (c) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+const bgLight = () => lum(hex2rgb(settings.bg)) > 0.5;
+
+// ---------- GL programs ----------
+function shader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function program(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, shader(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+const uniforms = (p, names) => Object.fromEntries(names.map((n) => [n, gl.getUniformLocation(p, n)]));
+
+// Shared color logic: layer visibility/override from the layer table, then the theme.
+const COLOR_GLSL = `
+uniform sampler2D uLayers;   // row 0: (visible, override on, -, -), row 1: override rgb
+uniform bool uMono;
+uniform vec3 uMonoColor;
+uniform bool uAdapt;         // light background: white -> ink, light colors darker
+uniform vec3 uInk;
+bool layerVisible(uint l) { return l == 65535u || texelFetch(uLayers, ivec2(int(l), 0), 0).r > 0.5; }
+vec3 themed(vec3 c, uint l) {
+  if (l != 65535u && texelFetch(uLayers, ivec2(int(l), 0), 0).g > 0.5) c = texelFetch(uLayers, ivec2(int(l), 1), 0).rgb;
+  if (uMono) return uMonoColor;
+  if (uAdapt) {
+    if (min(c.r, min(c.g, c.b)) > 0.85) return uInk;
+    if (dot(c, vec3(0.2126, 0.7152, 0.0722)) > 0.7) return c * 0.6;
+  }
+  return c;
+}`;
+const COLOR_UNIFORMS = ["uLayers", "uMono", "uMonoColor", "uAdapt", "uInk"];
+
+// Lines and fills: block geometry, instanced. Vertex alpha = color mode:
+// 255 fixed color, 0 = instance ByBlock color, 1 = instance layer-0 color.
+const sceneProg = program(`#version 300 es
+layout(location=0) in vec2 pos;
+layout(location=1) in vec4 col;
+layout(location=2) in vec2 iX;
+layout(location=3) in vec2 iY;
+layout(location=4) in vec2 iT;
+layout(location=5) in vec4 iCB;
+layout(location=6) in vec4 iCL;
+layout(location=7) in uint lay;
+layout(location=8) in uvec2 iLay;  // layer for layer-0 entities inside, top-level INSERT layer
+uniform vec2 uCenter;
+uniform vec2 uScale;
+uniform uint uLayer0;
+${COLOR_GLSL}
+out vec4 vCol;
+void main() {
+  uint eff = (lay == uLayer0 && iLay.x != 65535u) ? iLay.x : lay;
+  if (!layerVisible(eff) || !layerVisible(iLay.y)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vec2 w = iX * pos.x + iY * pos.y + iT;
+  gl_Position = vec4((w - uCenter) * uScale, 0.0, 1.0);
+  float m = col.a * 255.0;
+  vec3 c = m > 2.0 ? col.rgb : (m < 0.5 ? iCB.rgb : iCL.rgb);
+  vCol = vec4(themed(c, eff), 1.0);
+}`, `#version 300 es
+precision mediump float;
+in vec4 vCol;
+out vec4 o;
+void main() { o = vCol; }`);
+const sU = uniforms(sceneProg, ["uCenter", "uScale", "uLayer0", ...COLOR_UNIFORMS]);
+
+// Texts: glyph quads already in world coordinates (relative to origin).
+const textProg = program(`#version 300 es
+layout(location=0) in vec2 pos;
+layout(location=1) in vec2 uv;
+layout(location=2) in vec4 col;
+layout(location=3) in uvec2 lays;  // effective layer, top-level INSERT layer
+uniform vec2 uCenter;
+uniform vec2 uScale;
+${COLOR_GLSL}
+out vec2 vUv;
+out vec4 vCol;
+void main() {
+  if (!layerVisible(lays.x) || !layerVisible(lays.y)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  gl_Position = vec4((pos - uCenter) * uScale, 0.0, 1.0);
+  vUv = uv;
+  vCol = vec4(themed(col.rgb, lays.x), 1.0);
+}`, `#version 300 es
+precision mediump float;
+uniform sampler2D uAtlas;
+in vec2 vUv;
+in vec4 vCol;
+out vec4 o;
+void main() { o = vec4(vCol.rgb, texture(uAtlas, vUv).a); }`);
+const tU = uniforms(textProg, ["uCenter", "uScale", "uAtlas", ...COLOR_UNIFORMS]);
+
+// Present: the cache texture as a quad placed in world coordinates.
+const quadProg = program(`#version 300 es
+layout(location=0) in vec2 corner;
+uniform vec4 uRect;
+uniform vec2 uCenter;
+uniform vec2 uScale;
+out vec2 vUv;
+void main() {
+  vec2 w = mix(uRect.xy, uRect.zw, corner);
+  gl_Position = vec4((w - uCenter) * uScale, 0.0, 1.0);
+  vUv = corner;
+}`, `#version 300 es
+precision mediump float;
+uniform sampler2D uTex;
+in vec2 vUv;
+out vec4 o;
+void main() { o = texture(uTex, vUv); }`);
+const qU = uniforms(quadProg, ["uRect", "uCenter", "uScale", "uTex"]);
+
+let meta = null, data = null, layers = [];
+let sceneVao, quadVao, textVao, textCount = 0, atlasTex = null, layerTex = null;
+const bufs = {};
+const view = { cx: 0, cy: 0, ppu: 1 };   // center (world, relative to origin), device px per unit
+let cache = null, lastSharpMs = 0, sharpTimer = 0, framePending = false, zoom = null;
+
+// ---------- view ----------
+function fitBox(x0, y0, x1, y1, margin = 0.95) {
+  view.cx = (x0 + x1) / 2;
+  view.cy = (y0 + y1) / 2;
+  view.ppu = margin * Math.min(canvas.width / Math.max(x1 - x0, 1e-9), canvas.height / Math.max(y1 - y0, 1e-9));
+  zoom = null;
+}
+const fit = () => fitBox(...meta.bbox);
+function resize() {
+  for (const c of [canvas, ov]) {
+    c.width = Math.round(c.clientWidth * dpr());
+    c.height = Math.round(c.clientHeight * dpr());
+  }
+  makeCache();
+}
+// device px (from canvas top-left) <-> world (relative to origin)
+const toWorld = (px, py) => [view.cx + (px - canvas.width / 2) / view.ppu, view.cy + (canvas.height / 2 - py) / view.ppu];
+const toScreen = (wx, wy) => [(wx - view.cx) * view.ppu + canvas.width / 2, canvas.height / 2 - (wy - view.cy) * view.ppu];
+
+// ---------- cache ----------
+function makeCache() {
+  if (cache) {
+    for (const rb of [cache.msRb, cache.dsRb]) gl.deleteRenderbuffer(rb);
+    for (const fb of [cache.msFbo, cache.fbo]) gl.deleteFramebuffer(fb);
+    gl.deleteTexture(cache.tex);
+  }
+  const maxTex = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE), gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+  const w = Math.min(Math.round(canvas.width * CACHE_MARGIN), maxTex);
+  const h = Math.min(Math.round(canvas.height * CACHE_MARGIN), maxTex);
+  const samples = Math.min(4, gl.getParameter(gl.MAX_SAMPLES));
+  const msRb = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, msRb);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA8, w, h);
+  const dsRb = gl.createRenderbuffer();
+  gl.bindRenderbuffer(gl.RENDERBUFFER, dsRb);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH24_STENCIL8, w, h);
+  const msFbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, msFbo);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, msRb);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, dsRb);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texStorage2D(gl.TEXTURE_2D, 1 + Math.floor(Math.log2(Math.max(w, h))), gl.RGBA8, w, h);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  cache = { msRb, dsRb, msFbo, fbo, tex, w, h, view: null };
+}
+
+function bindBatch(posBuf, colBuf, layBuf, vStart, iStart) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, vStart * 8);
+  gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+  gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, 0, vStart * 4);
+  gl.bindBuffer(gl.ARRAY_BUFFER, layBuf);
+  gl.vertexAttribIPointer(7, 1, gl.UNSIGNED_SHORT, 0, vStart * 2);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufs.inst);
+  gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 24, iStart * 24);
+  gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 24, iStart * 24 + 8);
+  gl.vertexAttribPointer(4, 2, gl.FLOAT, false, 24, iStart * 24 + 16);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufs.instCol);
+  gl.vertexAttribPointer(5, 4, gl.UNSIGNED_BYTE, true, 8, iStart * 8);
+  gl.vertexAttribPointer(6, 4, gl.UNSIGNED_BYTE, true, 8, iStart * 8 + 4);
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufs.instLay);
+  gl.vertexAttribIPointer(8, 2, gl.UNSIGNED_SHORT, 4, iStart * 4);
+}
+
+function setColorUniforms(u) {
+  const th = THEMES[settings.theme] || THEMES.dark;
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, layerTex);
+  gl.uniform1i(u.uLayers, 1);
+  gl.uniform1i(u.uMono, th.mono ? 1 : 0);
+  gl.uniform3fv(u.uMonoColor, hex2rgb(settings.mono).map((v) => v / 255));
+  gl.uniform1i(u.uAdapt, settings.adapt && bgLight() ? 1 : 0);
+  gl.uniform3fv(u.uInk, [0.08, 0.09, 0.1]);
+}
+
+function renderCache() {
+  const t = performance.now();
+  const bg = hex2rgb(settings.bg).map((v) => v / 255);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, cache.msFbo);
+  gl.viewport(0, 0, cache.w, cache.h);
+  gl.clearColor(bg[0], bg[1], bg[2], 1);
+  gl.clearStencil(0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
+  const sx = 2 * view.ppu / cache.w, sy = 2 * view.ppu / cache.h;
+
+  gl.useProgram(sceneProg);
+  gl.bindVertexArray(sceneVao);
+  gl.uniform2f(sU.uCenter, view.cx, view.cy);
+  gl.uniform2f(sU.uScale, sx, sy);
+  gl.uniform1ui(sU.uLayer0, meta.layer0);
+  setColorUniforms(sU);
+  if (settings.fills) {
+    // Fills: even-odd parity in the stencil, then color where parity is odd (and reset it).
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilMask(1);
+    for (const [, , fStart, fCount, iStart, iCount] of meta.blocks) {
+      if (!fCount) continue;
+      bindBatch(bufs.fillPos, bufs.fillCol, bufs.fillLay, fStart, iStart);
+      gl.colorMask(false, false, false, false);
+      gl.stencilFunc(gl.ALWAYS, 0, 1);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.INVERT);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, fCount, iCount);
+      gl.colorMask(true, true, true, true);
+      gl.stencilFunc(gl.EQUAL, 1, 1);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.ZERO);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, fCount, iCount);
+    }
+    gl.disable(gl.STENCIL_TEST);
+  }
+  for (const [vStart, vCount, , , iStart, iCount] of meta.blocks) {
+    if (!vCount) continue;
+    bindBatch(bufs.pos, bufs.col, bufs.lay, vStart, iStart);
+    gl.drawArraysInstanced(gl.LINES, 0, vCount, iCount);
+  }
+  if (textCount && settings.texts) {
+    gl.useProgram(textProg);
+    gl.bindVertexArray(textVao);
+    gl.uniform2f(tU.uCenter, view.cx, view.cy);
+    gl.uniform2f(tU.uScale, sx, sy);
+    setColorUniforms(tU);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, atlasTex);
+    gl.uniform1i(tU.uAtlas, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, 0, textCount);
+    gl.disable(gl.BLEND);
+  }
+  gl.bindVertexArray(null);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, cache.msFbo);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, cache.fbo);
+  gl.blitFramebuffer(0, 0, cache.w, cache.h, 0, 0, cache.w, cache.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, cache.tex);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  cache.view = { cx: view.cx, cy: view.cy, ppu: view.ppu };
+  lastSharpMs = performance.now() - t; // CPU submit time only
+}
+
+function present() {
+  const bg = hex2rgb(settings.bg).map((v) => v / 255);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(bg[0], bg[1], bg[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (!cache.view) return;
+  const c = cache.view, hw = cache.w / 2 / c.ppu, hh = cache.h / 2 / c.ppu;
+  gl.useProgram(quadProg);
+  gl.bindVertexArray(quadVao);
+  gl.uniform4f(qU.uRect, c.cx - hw, c.cy - hh, c.cx + hw, c.cy + hh);
+  gl.uniform2f(qU.uCenter, view.cx, view.cy);
+  gl.uniform2f(qU.uScale, 2 * view.ppu / canvas.width, 2 * view.ppu / canvas.height);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, cache.tex);
+  gl.uniform1i(qU.uTex, 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.bindVertexArray(null);
+}
+
+function frame() {
+  framePending = false;
+  if (zoom) stepZoom();
+  present();
+  drawOverlay();
+  updateStatus();
+  if (zoom) requestFrame();
+}
+function requestFrame() {
+  if (!framePending) { framePending = true; requestAnimationFrame(frame); }
+}
+function viewChanged() {
+  requestFrame();
+  clearTimeout(sharpTimer);
+  sharpTimer = setTimeout(sharp, SHARP_DELAY_MS);
+}
+function sharp() {
+  if (zoom) { sharpTimer = setTimeout(sharp, SHARP_DELAY_MS); return; }
+  renderCache();
+  requestFrame();
+}
+// Scene content changed (layers, theme): redraw at once.
+function redraw() { if (meta && cache) { renderCache(); requestFrame(); } }
+function stepZoom() {
+  const wx = view.cx + zoom.ax / view.ppu, wy = view.cy + zoom.ay / view.ppu;
+  const d = Math.log(zoom.target / view.ppu);
+  view.ppu = Math.abs(d) < 1e-3 ? zoom.target : view.ppu * Math.exp(d * ZOOM_EASE);
+  view.cx = wx - zoom.ax / view.ppu;
+  view.cy = wy - zoom.ay / view.ppu;
+  if (view.ppu === zoom.target) zoom = null;
+}
+
+// ---------- instances and layers ----------
+function instXf(i) {
+  const a = data.inst;
+  return [a[i * 6], a[i * 6 + 1], a[i * 6 + 2], a[i * 6 + 3], a[i * 6 + 4], a[i * 6 + 5]];
+}
+const xfApply = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+function instColor(i, c) {
+  if (c[3] === 255) return c;
+  const o = i * 8 + (c[3] === 0 ? 0 : 4), ic = data.instCol;
+  return [ic[o], ic[o + 1], ic[o + 2], ic[o + 3]];
+}
+const effLayer = (lay, inst) => (lay === meta.layer0 && data.instLay[inst * 2] !== NO_LAYER) ? data.instLay[inst * 2] : lay;
+const layerOn = (l) => l === NO_LAYER || !layers[l] || layers[l].on;
+const instOn = (inst) => layerOn(data.instLay[inst * 2 + 1]);
+
+function uploadLayers() {
+  const n = Math.max(1, layers.length), px = new Uint8Array(n * 2 * 4);
+  layers.forEach((l, i) => {
+    px[i * 4] = l.on ? 255 : 0;
+    px[i * 4 + 1] = l.color ? 255 : 0;
+    px[i * 4 + 3] = 255;
+    const c = l.color ? hex2rgb(l.color) : l.base;
+    px[(n + i) * 4] = c[0]; px[(n + i) * 4 + 1] = c[1]; px[(n + i) * 4 + 2] = c[2]; px[(n + i) * 4 + 3] = 255;
+  });
+  if (!layerTex) layerTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, layerTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, n, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  settings.layers = Object.fromEntries(layers.filter((l) => !l.on !== !l.dwgOn || l.color).map((l) => [l.name, { on: l.on, color: l.color }]));
+  save();
+}
+
+// ---------- text ----------
+const FONT_PX = 96, CELL = 128, BASE = 100, PADX = 16;
+const FONT = `${FONT_PX}px Arial, Helvetica, sans-serif`;
+
+function buildAtlas(chars) {
+  const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  const cols = Math.max(1, Math.min(32, Math.floor(maxTex / CELL)));
+  const rows = Math.ceil(chars.length / cols) || 1;
+  const cv = document.createElement("canvas");
+  cv.width = cols * CELL;
+  cv.height = rows * CELL;
+  const c = cv.getContext("2d");
+  c.font = FONT;
+  c.fillStyle = "#fff";
+  c.textBaseline = "alphabetic";
+  const capPx = c.measureText("H").actualBoundingBoxAscent || FONT_PX * 0.716;
+  const glyphs = new Map();
+  chars.forEach((ch, i) => {
+    const x = (i % cols) * CELL, y = Math.floor(i / cols) * CELL;
+    c.fillText(ch, x + PADX, y + BASE);
+    glyphs.set(ch, { adv: c.measureText(ch).width, u0: x / cv.width, u1: (x + CELL) / cv.width, v0: y / cv.height, v1: (y + CELL) / cv.height });
+  });
+  const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return { tex, glyphs, capPx };
+}
+
+// Width of a string in the browser font, before any calibration (drawing units).
+function fontWidth(s, h, wf, atlas) {
+  let w = 0;
+  for (const ch of s) w += atlas.glyphs.get(ch)?.adv ?? FONT_PX * 0.5;
+  return w * (h / atlas.capPx) * wf;
+}
+
+// Width AutoCAD computed for a centered/right/middle TEXT: the DWG keeps both the alignment
+// point and the derived insertion point, so their distance along the baseline gives it.
+function cadWidth(t) {
+  if (t.k !== 0 || ![1, 2, 4].includes(t.ha)) return null;
+  const proj = (t.ax - t.x) * Math.cos(t.r) + (t.ay - t.y) * Math.sin(t.r);
+  const w = t.ha === 2 ? proj : 2 * proj;
+  return w > 0 ? w : null;
+}
+
+// Per style: median of (AutoCAD width / browser width) over the texts where both are known.
+// The browser lacks the CAD fonts (SHX, special TTF); this keeps text lengths close to the original.
+function styleRatios(atlas) {
+  const by = new Map();
+  for (const t of meta.texts) {
+    const cad = cadWidth(t), fw = fontWidth(t.s, t.h, t.wf || 1, atlas);
+    if (cad && fw > 0) (by.get(t.st) || by.set(t.st, []).get(t.st)).push(cad / fw);
+  }
+  const out = new Map();
+  for (const [st, v] of by) { v.sort((a, b) => a - b); out.set(st, v[v.length >> 1]); }
+  return out;
+}
+
+// Layout of one text in its own frame (u along the baseline, v up), drawing units.
+// `scale` stretches the browser font to the CAD width. Returns
+// { anchor, rot, glyphs: [{ch, u, v, k, wf}], box: [u0, v0, u1, v1], ob }.
+function layoutText(t, atlas, scale) {
+  const style = meta.styles[t.st];
+  let h = t.h, rot = t.r;
+  let wf = (t.k === 1 ? (style?.wf || 1) : (t.wf || 1)) * scale;
+  const ob = t.k === 1 ? (style?.ob || 0) : (t.ob || 0);
+  const k0 = () => h / atlas.capPx;              // drawing units per font px
+  const lineWidth = (s) => fontWidth(s, h, wf, atlas);
+  let lines;                                       // [text, paragraph alignment]
+  if (t.k === 1) {
+    lines = [];
+    t.s.split("\n").forEach((para, pi) => {
+      const pa = (t.pa && t.pa[pi]) || 0;
+      if (t.w > 0) {
+        let cur = "";
+        for (const word of para.split(" ")) {
+          const next = cur ? cur + " " + word : word;
+          if (cur && lineWidth(next) > t.w * 1.001) { lines.push([cur, pa]); cur = word; } else cur = next;
+        }
+        lines.push([cur, pa]);
+      } else lines.push([para, pa]);
+    });
+  } else lines = [[t.s.replace(/\n/g, " "), 0]];
+
+  let anchor = [t.x, t.y];
+  const placed = [];                               // [line, du, dv]
+  if (t.k === 1) {
+    // Attachment places the reference box around the insertion point; paragraph alignment
+    // (\pxq?;) places each line inside the box, defaulting to the attachment column.
+    const ls = h * 5 / 3, at = t.at >= 1 && t.at <= 9 ? t.at : 1;
+    const col = (at - 1) % 3, row = Math.floor((at - 1) / 3);
+    const widths = lines.map(([ln]) => lineWidth(ln));
+    const boxW = t.w > 0 ? t.w : Math.max(0, ...widths);
+    const boxLeft = col === 0 ? 0 : col === 1 ? -boxW / 2 : -boxW;
+    const total = h + (lines.length - 1) * ls;
+    const y0 = row === 0 ? -h : row === 1 ? -h + total / 2 : -h + total;
+    lines.forEach(([ln, pa], i) => {
+      const a = pa || col + 1, w = widths[i];
+      placed.push([ln, boxLeft + (a === 1 ? 0 : a === 2 ? (boxW - w) / 2 : boxW - w), y0 - i * ls]);
+    });
+  } else {
+    const ln = lines[0][0];
+    const w = lineWidth(ln);
+    let du = 0, dv = 0;
+    const dx = t.ax - t.x, dy = t.ay - t.y, L = Math.hypot(dx, dy);
+    if ((t.ha === 3 || t.ha === 5) && L > 0 && w > 0) {
+      rot = Math.atan2(dy, dx);
+      if (t.ha === 5) wf *= L / w; else h *= L / w;
+    } else if (t.ha !== 0 || t.va !== 0) {
+      anchor = [t.ax, t.ay];
+      du = t.ha === 1 || t.ha === 4 ? -w / 2 : t.ha === 2 ? -w : 0;
+      dv = t.ha === 4 ? -h / 2 : t.va === 1 ? h * 0.25 : t.va === 2 ? -h / 2 : t.va === 3 ? -h : 0;
+    }
+    placed.push([ln, du, dv]);
+  }
+  const k = k0(), glyphs = [];
+  let box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [ln, du, dv] of placed) {
+    let u = du;
+    for (const ch of ln) {
+      const g = atlas.glyphs.get(ch);
+      if (g && ch.trim()) glyphs.push({ ch, u, v: dv, k, wf });
+      u += (g?.adv ?? FONT_PX * 0.5) * k * wf;
+    }
+    box = [Math.min(box[0], du), Math.min(box[1], dv - h * 0.25), Math.max(box[2], u), Math.max(box[3], dv + h)];
+  }
+  return { anchor, rot, glyphs, box, ob: Math.tan(ob) };
+}
+
+let textBoxes = [];   // { text, inst, lay (effective), corners: [[x,y]x4] (world rel. origin), id }
+function buildTexts() {
+  const chars = new Set();
+  for (const t of meta.texts) for (const ch of t.s) if (ch.trim()) chars.add(ch);
+  const atlas = buildAtlas([...chars]);
+  atlasTex = atlas.tex;
+  const pos = [], uv = [], col = [], lay = [];
+  textBoxes = [];
+  const ratios = styleRatios(atlas);
+  for (const t of meta.texts) {
+    const cad = cadWidth(t), fw = fontWidth(t.s, t.h, t.wf || 1, atlas);
+    const scale = cad && fw > 0 ? cad / fw : ratios.get(t.st) ?? 1;
+    const L = layoutText(t, atlas, scale);
+    const [, , , , iStart, iCount] = meta.blocks[t.b];
+    const cs = Math.cos(L.rot), sn = Math.sin(L.rot);
+    // text frame (u, v) -> block-local (relative to the batch center)
+    const local = (u, v) => { const uu = u + v * L.ob; return [L.anchor[0] + uu * cs - v * sn, L.anchor[1] + uu * sn + v * cs]; };
+    for (let i = iStart; i < iStart + iCount; i++) {
+      const m = instXf(i), c = instColor(i, t.c), eff = effLayer(t.l, i), top = data.instLay[i * 2 + 1];
+      const w = (u, v) => { const p = local(u, v); return xfApply(m, p[0], p[1]); };
+      for (const g of L.glyphs) {
+        const G = atlas.glyphs.get(g.ch);
+        const u0 = g.u - PADX * g.k * g.wf, u1 = g.u + (CELL - PADX) * g.k * g.wf;
+        const v0 = g.v - (CELL - BASE) * g.k, v1 = g.v + BASE * g.k;
+        const p00 = w(u0, v0), p10 = w(u1, v0), p01 = w(u0, v1), p11 = w(u1, v1);
+        for (const [p, a, b] of [[p00, G.u0, G.v1], [p10, G.u1, G.v1], [p11, G.u1, G.v0],
+                                 [p00, G.u0, G.v1], [p11, G.u1, G.v0], [p01, G.u0, G.v0]]) {
+          pos.push(p[0], p[1]); uv.push(a, b); col.push(c[0], c[1], c[2], 255); lay.push(eff, top);
+        }
+      }
+      const [b0, b1, b2, b3] = L.box;
+      textBoxes.push({ text: t, inst: i, lay: eff, id: t.id, corners: [w(b0, b1), w(b2, b1), w(b2, b3), w(b0, b3)] });
+    }
+  }
+  textCount = pos.length / 2;
+  textVao = gl.createVertexArray();
+  gl.bindVertexArray(textVao);
+  const add = (loc, arr, size, type, norm, integer) => {
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);
+    if (integer) gl.vertexAttribIPointer(loc, size, type, 0, 0); else gl.vertexAttribPointer(loc, size, type, norm, 0, 0);
+  };
+  add(0, new Float32Array(pos), 2, gl.FLOAT, false);
+  add(1, new Float32Array(uv), 2, gl.FLOAT, false);
+  add(2, new Uint8Array(col), 4, gl.UNSIGNED_BYTE, true);
+  add(3, new Uint16Array(lay), 2, gl.UNSIGNED_SHORT, false, true);
+  gl.bindVertexArray(null);
+}
+const textVisible = (b) => settings.texts && layerOn(b.lay) && instOn(b.inst);
+
+// ---------- picking ----------
+let batchBox = [];   // local bbox per batch: [minx, miny, maxx, maxy]
+function computeBatchBoxes() {
+  const p = data.pos;
+  batchBox = meta.blocks.map(([vStart, vCount]) => {
+    const b = [Infinity, Infinity, -Infinity, -Infinity];
+    for (let k = vStart; k < vStart + vCount; k++) {
+      const x = p[k * 2], y = p[k * 2 + 1];
+      if (x < b[0]) b[0] = x; if (y < b[1]) b[1] = y; if (x > b[2]) b[2] = x; if (y > b[3]) b[3] = y;
+    }
+    return b;
+  });
+}
+
+function pointInQuad(q, x, y) {
+  let inside = false;
+  for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+    const [xi, yi] = q[i], [xj, yj] = q[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Nearest visible segment and nearest snap point (endpoint or midpoint) within `tol` world units.
+function pick(wx, wy, tol, wantSeg = true) {
+  const p = data.pos, ids = data.ids, ly = data.lay;
+  let seg = null, segD = tol, snap = null, snapD = tol;
+  meta.blocks.forEach(([vStart, vCount, , , iStart, iCount], bi) => {
+    if (!vCount) return;
+    const bb = batchBox[bi];
+    for (let i = iStart; i < iStart + iCount; i++) {
+      if (!instOn(i)) continue;
+      const m = instXf(i);
+      const det = m[0] * m[3] - m[1] * m[2];
+      if (Math.abs(det) < 1e-30) continue;
+      const s = Math.sqrt(Math.abs(det));
+      const px = wx - m[4], py = wy - m[5];
+      const lx = (m[3] * px - m[2] * py) / det, ly2 = (-m[1] * px + m[0] * py) / det;
+      const tl = Math.max(segD, snapD) / s;
+      if (lx < bb[0] - tl || lx > bb[2] + tl || ly2 < bb[1] - tl || ly2 > bb[3] + tl) continue;
+      const inherit = data.instLay[i * 2];
+      for (let k = vStart; k < vStart + vCount; k += 2) {
+        const l = ly[k];
+        const eff = l === meta.layer0 && inherit !== NO_LAYER ? inherit : l;
+        if (eff !== NO_LAYER && layers[eff] && !layers[eff].on) continue;
+        const x0 = p[k * 2], y0 = p[k * 2 + 1], x1 = p[k * 2 + 2], y1 = p[k * 2 + 3];
+        // quick reject on the segment bounding box
+        const r = Math.max(segD, snapD) / s;
+        if ((x0 < lx - r && x1 < lx - r) || (x0 > lx + r && x1 > lx + r) || (y0 < ly2 - r && y1 < ly2 - r) || (y0 > ly2 + r && y1 > ly2 + r)) continue;
+        if (wantSeg) {
+          const dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
+          let t = l2 > 0 ? ((lx - x0) * dx + (ly2 - y0) * dy) / l2 : 0;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const d = Math.hypot(x0 + t * dx - lx, y0 + t * dy - ly2) * s;
+          if (d < segD) { segD = d; seg = { bi, inst: i, k, id: ids[k >> 1] }; }
+        }
+        for (const [vx, vy, kind] of [[x0, y0, "end"], [x1, y1, "end"], [(x0 + x1) / 2, (y0 + y1) / 2, "mid"]]) {
+          const dv = Math.hypot(vx - lx, vy - ly2) * s * (kind === "mid" ? 1.15 : 1); // prefer endpoints
+          if (dv < snapD) { snapD = dv; snap = { p: xfApply(m, vx, vy), kind }; }
+        }
+      }
+    }
+  });
+  return { seg, snap };
+}
+
+// All segments of entity `id` in batch `bi`, instance `inst`, in world coordinates.
+function entitySegments(bi, inst, id) {
+  const [vStart, vCount] = meta.blocks[bi], p = data.pos, ids = data.ids, m = instXf(inst), out = [];
+  for (let k = vStart; k < vStart + vCount; k += 2) {
+    if (ids[k >> 1] !== id) continue;
+    out.push([xfApply(m, p[k * 2], p[k * 2 + 1]), xfApply(m, p[k * 2 + 2], p[k * 2 + 3])]);
+  }
+  return out;
+}
+
+// ---------- UI state ----------
+let tool = "info";
+let selection = null;              // { segs, box, layer }
+const measures = [];               // [{ a, b }]
+const areas = [];                  // [{ pts }]
+let pending = null;                // measure: { a } · area: { pts }
+let hover = null;                  // { p (world), snap } live cursor point for tools
+let search = { matches: [], index: -1 };
+let cursorWorld = null, cursorPx = null, zoomRect = null;
+
+const HINTS = {
+  info: "Click an element to see its measurements.",
+  measure: "Click the first point, then the second. Shift = orthogonal.",
+  area: "Click the vertices. Enter or double click to close, ⌫ removes the last.",
+  zoom: "Drag a rectangle to zoom in.",
+};
+function setTool(t) {
+  tool = t;
+  for (const b of document.querySelectorAll("#top [data-tool]")) b.setAttribute("aria-pressed", String(b.dataset.tool === t));
+  canvas.dataset.tool = t;
+  pending = null; hover = null;
+  $("hint").textContent = HINTS[t];
+  drawOverlay();
+}
+
+const fmt = (v, d = 3) => Number.isFinite(v) ? v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }) : "—";
+const absP = (p) => [p[0] + meta.origin[0], p[1] + meta.origin[1]];
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const polyArea = (pts) => Math.abs(pts.reduce((a, p, i) => { const q = pts[(i + 1) % pts.length]; return a + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2;
+const polyLen = (pts, closed) => pts.reduce((a, p, i) => i === 0 && !closed ? a : a + Math.hypot(p[0] - pts[(i - 1 + pts.length) % pts.length][0], p[1] - pts[(i - 1 + pts.length) % pts.length][1]), 0);
+
+// ---------- overlay ----------
+function drawOverlay() {
+  octx.setTransform(1, 0, 0, 1, 0, 0);
+  octx.clearRect(0, 0, ov.width, ov.height);
+  if (!meta) return;
+  const r = dpr(), sel = settings.sel, light = bgLight();
+  const ink = light ? "#1a1f24" : "#e8ebef", plate = light ? "rgba(255,255,255,0.92)" : "rgba(17,20,24,0.9)";
+  octx.lineCap = "round"; octx.lineJoin = "round";
+  const path = (pts, close) => { octx.beginPath(); pts.forEach((c, j) => { const s = toScreen(c[0], c[1]); j ? octx.lineTo(s[0], s[1]) : octx.moveTo(s[0], s[1]); }); if (close) octx.closePath(); };
+  const label = (text, sx, sy) => {
+    octx.font = `${12 * r}px system-ui, sans-serif`;
+    const tw = octx.measureText(text).width;
+    octx.fillStyle = plate;
+    octx.fillRect(sx - tw / 2 - 6 * r, sy - 12 * r, tw + 12 * r, 18 * r);
+    octx.fillStyle = ink; octx.textAlign = "center"; octx.fillText(text, sx, sy + 2 * r);
+  };
+  const dot = (p) => { const s = toScreen(p[0], p[1]); octx.fillStyle = sel; octx.beginPath(); octx.arc(s[0], s[1], 3.5 * r, 0, Math.PI * 2); octx.fill(); };
+
+  // search matches
+  search.matches.forEach((b, i) => {
+    if (!textVisible(b)) return;
+    const cur = i === search.index;
+    octx.strokeStyle = cur ? "#ffd54a" : "rgba(255, 213, 74, 0.5)";
+    octx.lineWidth = (cur ? 2.5 : 1.2) * r;
+    path(b.corners, true); octx.stroke();
+  });
+  // selection
+  if (selection) {
+    octx.strokeStyle = sel; octx.lineWidth = 3 * r;
+    octx.beginPath();
+    for (const [a, b] of selection.segs) { const s = toScreen(a[0], a[1]), t = toScreen(b[0], b[1]); octx.moveTo(s[0], s[1]); octx.lineTo(t[0], t[1]); }
+    octx.stroke();
+    if (selection.box) { path(selection.box, true); octx.stroke(); }
+  }
+  // areas
+  const drawArea = (pts, done) => {
+    if (pts.length < 2) { pts.forEach(dot); return; }
+    octx.fillStyle = sel + "33"; octx.strokeStyle = sel; octx.lineWidth = 2 * r;
+    octx.setLineDash(done ? [] : [6 * r, 4 * r]);
+    path(pts, true); if (pts.length > 2) octx.fill(); octx.stroke(); octx.setLineDash([]);
+    pts.forEach(dot);
+    if (pts.length > 2) {
+      const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length, cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+      const s = toScreen(cx, cy);
+      label(`A ${fmt(polyArea(pts))}   P ${fmt(polyLen(pts, true))}`, s[0], s[1]);
+    }
+  };
+  for (const a of areas) drawArea(a.pts, true);
+  if (tool === "area" && pending) drawArea(hover ? [...pending.pts, hover.p] : pending.pts, false);
+  // measures
+  const drawMeasure = (a, b, done) => {
+    const sa = toScreen(a[0], a[1]), sb = toScreen(b[0], b[1]);
+    octx.strokeStyle = sel; octx.lineWidth = 2 * r;
+    octx.setLineDash(done ? [] : [6 * r, 4 * r]);
+    octx.beginPath(); octx.moveTo(sa[0], sa[1]); octx.lineTo(sb[0], sb[1]); octx.stroke(); octx.setLineDash([]);
+    dot(a); dot(b);
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    label(`${fmt(Math.hypot(dx, dy))}   ΔX ${fmt(dx)}   ΔY ${fmt(dy)}   ${fmt(Math.atan2(dy, dx) * 180 / Math.PI, 2)}°`,
+      (sa[0] + sb[0]) / 2, (sa[1] + sb[1]) / 2 - 14 * r);
+  };
+  for (const m of measures) drawMeasure(m.a, m.b, true);
+  if (tool === "measure" && pending) { if (hover) drawMeasure(pending.a, hover.p, false); else dot(pending.a); }
+  // snap marker
+  if (hover && hover.snap && (tool === "measure" || tool === "area")) {
+    const s = toScreen(hover.snap.p[0], hover.snap.p[1]), q = 6 * r;
+    octx.strokeStyle = sel; octx.lineWidth = 2 * r; octx.beginPath();
+    if (hover.snap.kind === "mid") { octx.moveTo(s[0], s[1] - q); octx.lineTo(s[0] + q, s[1] + q); octx.lineTo(s[0] - q, s[1] + q); octx.closePath(); }
+    else octx.rect(s[0] - q, s[1] - q, 2 * q, 2 * q);
+    octx.stroke();
+  }
+  // zoom rectangle
+  if (zoomRect) {
+    const [x0, y0, x1, y1] = zoomRect;
+    octx.strokeStyle = sel; octx.lineWidth = 1.5 * r; octx.setLineDash([5 * r, 4 * r]);
+    octx.fillStyle = sel + "1a";
+    octx.fillRect(x0, y0, x1 - x0, y1 - y0); octx.strokeRect(x0, y0, x1 - x0, y1 - y0); octx.setLineDash([]);
+  }
+}
+
+function updateStatus() {
+  if (!meta) return;
+  const d = Math.max(0, Math.min(4, Math.ceil(Math.log10(view.ppu)) + 1));
+  const unitsPerPx = dpr() / view.ppu;
+  const pos = cursorWorld ? absP(cursorWorld) : null;
+  $("coords").textContent = pos ? `X ${fmt(pos[0], d)}   Y ${fmt(pos[1], d)}   ·   1 px = ${fmt(unitsPerPx, unitsPerPx < 1 ? 3 : 1)}` : "X —   Y —";
+}
+
+// ---------- properties panel ----------
+function renderMeasureList() {
+  const items = [
+    ...measures.map((m, i) => [`Distance ${fmt(Math.hypot(m.b[0] - m.a[0], m.b[1] - m.a[1]))}`, () => measures.splice(i, 1)]),
+    ...areas.map((a, i) => [`Area ${fmt(polyArea(a.pts))} · perimeter ${fmt(polyLen(a.pts, true))}`, () => areas.splice(i, 1)]),
+  ];
+  const box = $("measures");
+  if (!items.length) { box.innerHTML = ""; return; }
+  box.innerHTML = `<h3>Measurements</h3><ul class="list">${items.map(([t], i) => `<li><span>${esc(t)}</span><button class="btn mini" data-del="${i}" aria-label="Delete measurement">✕</button></li>`).join("")}</ul>`;
+  box.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => { items[+b.dataset.del][1](); renderMeasureList(); drawOverlay(); }));
+}
+
+async function showInfo(hit) {
+  const panel = $("props");
+  openPanel("props");
+  const { bi, inst, id } = hit;
+  const m = instXf(inst), c = meta.centers[bi];
+  const s = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2])), rotDeg = Math.atan2(m[1], m[0]) * 180 / Math.PI;
+  const worldPt = (p) => absP(xfApply(m, p[0] - c[0], p[1] - c[1]));
+  panel.innerHTML = `<p class="muted">Loading…</p>`;
+  let info;
+  try {
+    const r = await fetch(`entity?h=${id.toString(16)}`);
+    if (!r.ok) throw new Error(r.status);
+    info = await r.json();
+  } catch (e) {
+    panel.innerHTML = `<h2>Element #${id.toString(16).toUpperCase()}</h2><p class="muted">Data not available (${esc(e.message)}).</p>`;
+    return;
+  }
+  const rows = info.values.map(([name, kind, v]) => {
+    let txt;
+    if (kind === "pt") { const p = worldPt(v); txt = `${fmt(p[0])}<br>${fmt(p[1])}`; }
+    else if (kind === "len") txt = fmt(v * s);
+    else if (kind === "area") txt = fmt(v * s * s);
+    else if (kind === "ang") txt = fmt(((v + rotDeg) % 360 + 360) % 360, 2) + "°";
+    else if (kind === "num") txt = fmt(v, Number.isInteger(v) ? 0 : 3);
+    else txt = esc(v).replace(/\n/g, "<br>");
+    return `<tr><td>${esc(name)}</td><td>${txt}</td></tr>`;
+  });
+  const drawn = selection && selection.segs.length ? selection.segs.reduce((a, [p, q]) => a + Math.hypot(q[0] - p[0], q[1] - p[1]), 0) : null;
+  const li = layers.findIndex((l) => l.name === info.layer);
+  panel.innerHTML = `<h2>${esc(info.type)}</h2><table class="kv">
+    <tr><td>Layer</td><td>${esc(info.layer)}</td></tr>
+    <tr><td>Color</td><td>${esc(info.color)}</td></tr>
+    <tr><td>Handle</td><td>${esc(info.handle)}</td></tr>
+    ${rows.join("")}
+    ${drawn !== null ? `<tr><td>Drawn length</td><td>${fmt(drawn)}</td></tr>` : ""}
+  </table>
+  ${Math.abs(s - 1) > 1e-9 || meta.blocks[bi][5] > 1 ? `<p class="muted">Element inside a block: values converted to drawing coordinates (scale ${fmt(s, 4)}).</p>` : ""}
+  ${li >= 0 ? `<div class="row" style="margin-top:8px"><button class="btn outline" id="pHide">Hide layer</button><button class="btn outline" id="pIso">Show only this layer</button></div>` : ""}`;
+  if (li >= 0) {
+    $("pHide").addEventListener("click", () => { layers[li].on = false; layersChanged(); clearSelection(); });
+    $("pIso").addEventListener("click", () => { layers.forEach((l, i) => { l.on = i === li; }); layersChanged(); });
+  }
+}
+function clearSelection() {
+  selection = null;
+  $("props").innerHTML = `<p class="muted">Click an element of the drawing to see its type, layer and measurements.</p>`;
+  drawOverlay();
+}
+
+// ---------- tools ----------
+function toolPoint(wx, wy, ortho) {
+  let p = [wx, wy];
+  if (settings.snap) {
+    const { snap } = pick(wx, wy, PICK_PX * dpr() / view.ppu, false);
+    if (snap) return { p: snap.p, snap };
+  }
+  const prev = tool === "measure" ? pending?.a : pending?.pts[pending.pts.length - 1];
+  if (ortho && prev) p = Math.abs(wx - prev[0]) > Math.abs(wy - prev[1]) ? [wx, prev[1]] : [prev[0], wy];
+  return { p, snap: null };
+}
+
+function clickInfo(wx, wy) {
+  const tb = textBoxes.find((b) => textVisible(b) && pointInQuad(b.corners, wx, wy));
+  if (tb) {
+    selection = { segs: [], box: tb.corners };
+    drawOverlay();
+    showInfo({ bi: tb.text.b, inst: tb.inst, id: tb.id });
+    return;
+  }
+  const { seg } = pick(wx, wy, PICK_PX * dpr() / view.ppu);
+  if (!seg || !seg.id) { clearSelection(); return; }
+  selection = { segs: entitySegments(seg.bi, seg.inst, seg.id), box: null };
+  drawOverlay();
+  showInfo(seg);
+}
+
+function clickTool(wx, wy, shift) {
+  const { p } = toolPoint(wx, wy, shift);
+  if (tool === "measure") {
+    if (!pending) pending = { a: p };
+    else { measures.push({ a: pending.a, b: p }); pending = null; renderMeasureList(); }
+  } else if (tool === "area") {
+    if (!pending) pending = { pts: [p] };
+    else {
+      const first = toScreen(...pending.pts[0]), s = toScreen(...p);
+      if (pending.pts.length > 2 && Math.hypot(first[0] - s[0], first[1] - s[1]) < PICK_PX * dpr()) closeArea();
+      else pending.pts.push(p);
+    }
+  }
+  drawOverlay();
+}
+function closeArea() {
+  if (pending && pending.pts.length > 2) { areas.push({ pts: pending.pts }); renderMeasureList(); }
+  pending = null;
+  drawOverlay();
+}
+function clearMeasures() {
+  measures.length = 0; areas.length = 0; pending = null;
+  renderMeasureList(); drawOverlay();
+}
+
+// ---------- search ----------
+function runSearch() {
+  const q = $("q").value.trim().toLocaleLowerCase("en-US");
+  search = { matches: q ? textBoxes.filter((b) => textVisible(b) && b.text.s.toLocaleLowerCase("en-US").includes(q)) : [], index: -1 };
+  $("qn").textContent = q ? `${search.matches.length} results` : "";
+  drawOverlay();
+}
+function goToMatch(step) {
+  if (!search.matches.length) return;
+  const n = search.matches.length;
+  search.index = ((search.index + step) % n + n) % n;
+  const b = search.matches[search.index];
+  const xs = b.corners.map((c) => c[0]), ys = b.corners.map((c) => c[1]);
+  const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  view.cx = (Math.max(...xs) + Math.min(...xs)) / 2;
+  view.cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  const target = Math.min(canvas.width * 0.25 / Math.max(w, 1e-9), canvas.height * 0.25 / Math.max(h, 1e-9));
+  if (view.ppu < target * 0.5 || view.ppu > target * 8) view.ppu = target;
+  zoom = null;
+  $("qn").textContent = `${search.index + 1} / ${n}`;
+  viewChanged();
+}
+
+// ---------- side panel ----------
+function openPanel(tab) {
+  settings.panel = true;
+  if (tab) settings.tab = tab;
+  applyPanel();
+}
+function applyPanel() {
+  $("side").hidden = !settings.panel;
+  $("bPanel").setAttribute("aria-pressed", String(settings.panel));
+  for (const b of document.querySelectorAll("#tabs [data-tab]")) b.setAttribute("aria-pressed", String(b.dataset.tab === settings.tab));
+  for (const t of ["props", "layers", "look"]) $("pane-" + t).hidden = t !== settings.tab;
+  save();
+}
+
+function renderLayers() {
+  const f = $("lf").value.trim().toLocaleLowerCase("en-US");
+  const list = $("layerList");
+  const shown = layers.map((l, i) => [l, i]).filter(([l]) => !f || l.name.toLocaleLowerCase("en-US").includes(f));
+  list.innerHTML = shown.map(([l, i]) => `
+    <li class="${l.on ? "" : "off"}">
+      <input type="checkbox" data-vis="${i}" ${l.on ? "checked" : ""} aria-label="Visible: ${esc(l.name)}">
+      <input type="color" data-col="${i}" value="${l.color || rgb2hex(l.base)}" aria-label="Color: ${esc(l.name)}" title="Layer color">
+      <span class="lname" title="${esc(l.name)}">${esc(l.name)}</span>
+      ${l.color ? `<button class="btn mini" data-reset="${i}" title="Original color" aria-label="Original color">↺</button>` : ""}
+      <button class="btn mini" data-solo="${i}" title="Show only this layer">solo</button>
+    </li>`).join("");
+  $("lCount").textContent = `${layers.filter((l) => l.on).length} / ${layers.length} visible`;
+}
+function layersChanged() {
+  uploadLayers();
+  renderLayers();
+  if ($("q").value) runSearch();
+  redraw();
+}
+
+function renderThemes() {
+  $("themes").innerHTML = Object.entries(THEMES).map(([k, t]) =>
+    `<button class="theme" data-theme="${k}" aria-pressed="${settings.theme === k}"><span class="sw" style="background:${t.bg}; ${t.mono ? `box-shadow: inset 0 -6px 0 ${t.ink}` : "background-image: linear-gradient(90deg, transparent 55%, #ff5050 55% 70%, #50d050 70% 85%, #5090ff 85%)"}"></span>${t.name}</button>`).join("");
+  $("cBg").value = settings.bg;
+  $("cMono").value = settings.mono;
+  $("cSel").value = settings.sel;
+  $("cAdapt").checked = settings.adapt;
+  $("eText").checked = settings.texts;
+  $("eFill").checked = settings.fills;
+}
+function applyLook() {
+  document.documentElement.dataset.theme = bgLight() ? "light" : "dark";
+  document.documentElement.style.setProperty("--bg", settings.bg);
+  save();
+  renderThemes();
+  redraw();
+}
+
+// ---------- PNG export ----------
+function exportPng() {
+  if (!meta) return;
+  present();                              // the drawing buffer is valid until this task ends
+  drawOverlay();
+  const out = document.createElement("canvas");
+  out.width = canvas.width; out.height = canvas.height;
+  const c = out.getContext("2d");
+  c.drawImage(canvas, 0, 0);
+  c.drawImage(ov, 0, 0);
+  out.toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "dwg-view.png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, "image/png");
+}
+
+// ---------- load ----------
+async function load() {
+  const t0 = performance.now();
+  const get = (u) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + " " + r.status); return r; });
+  const bin = (u) => get(u).then((r) => r.arrayBuffer());
+  const [m, pos, col, ids, lay, fpos, fcol, flay, inst, icol, ilay] = await Promise.all([
+    get("meta.json").then((r) => r.json()),
+    bin("positions.bin"), bin("colors.bin"), bin("ids.bin"), bin("layers.bin"),
+    bin("fillpos.bin"), bin("fillcol.bin"), bin("filllayers.bin"),
+    bin("instances.bin"), bin("instcol.bin"), bin("instlayers.bin"),
+  ]);
+  const t1 = performance.now();
+  meta = m;
+  data = { pos: new Float32Array(pos), ids: new Uint32Array(ids), lay: new Uint16Array(lay), inst: new Float32Array(inst),
+    instCol: new Uint8Array(icol), instLay: new Uint16Array(ilay) };
+  layers = meta.layers.map((l) => {
+    const saved = settings.layers[l.n];
+    return { name: l.n, base: l.c, dwgOn: l.on, on: saved ? saved.on : l.on, color: saved ? saved.color : null };
+  });
+  uploadLayers();
+  const mk = (arr) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW); return b; };
+  sceneVao = gl.createVertexArray();
+  gl.bindVertexArray(sceneVao);
+  bufs.pos = mk(pos); bufs.col = mk(col); bufs.lay = mk(lay);
+  bufs.fillPos = mk(fpos); bufs.fillCol = mk(fcol); bufs.fillLay = mk(flay);
+  bufs.inst = mk(inst); bufs.instCol = mk(icol); bufs.instLay = mk(ilay);
+  for (let loc = 0; loc <= 8; loc++) gl.enableVertexAttribArray(loc);
+  for (const loc of [2, 3, 4, 5, 6, 8]) gl.vertexAttribDivisor(loc, 1);
+  quadVao = gl.createVertexArray();
+  gl.bindVertexArray(quadVao);
+  mk(new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]));
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+  const t2 = performance.now();
+  buildTexts();
+  computeBatchBoxes();
+  const t3 = performance.now();
+  const mb = [pos, col, ids, lay, fpos, fcol, flay, inst, icol, ilay].reduce((a, b) => a + b.byteLength, 0) / 1e6;
+  const it = (n) => n.toLocaleString("en-US");
+  $("stats").textContent = `${it(meta.segments)} segments · ${it(meta.triangles)} triangles · ${it(textBoxes.length)} texts · ${it(layers.length)} layer\n` +
+    `Download ${mb.toFixed(0)} MB in ${(t1 - t0).toFixed(0)} ms · GPU ${(t2 - t1).toFixed(0)} ms · texts ${(t3 - t2).toFixed(0)} ms`;
+  $("loading").remove();
+  renderLayers();
+  renderThemes();
+  applyLook();
+  applyPanel();
+  setTool("info");
+  resize();
+  fit();
+  renderCache();
+  requestFrame();
+}
+
+// ---------- input ----------
+let drag = null;
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+canvas.addEventListener("pointerdown", (e) => {
+  if (!meta) return;
+  const rect = e.button === 0 && (tool === "zoom" || e.shiftKey) && !(tool === "measure" || tool === "area");
+  drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false, button: e.button, rect, shift: e.shiftKey };
+  zoom = null;
+  canvas.setPointerCapture(e.pointerId);
+});
+let hoverPending = false;
+canvas.addEventListener("pointermove", (e) => {
+  if (!meta) return;
+  const r = dpr();
+  cursorPx = [e.clientX * r, e.clientY * r];
+  cursorWorld = toWorld(...cursorPx);
+  updateStatus();
+  if (drag) {
+    if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 4) {
+      drag.moved = true;
+      if (!drag.rect) canvas.classList.add("drag");
+    }
+    if (!drag.moved) return;
+    if (drag.rect) {
+      zoomRect = [Math.min(drag.sx, e.clientX) * r, Math.min(drag.sy, e.clientY) * r, Math.max(drag.sx, e.clientX) * r, Math.max(drag.sy, e.clientY) * r];
+      drawOverlay();
+    } else {
+      view.cx -= (e.clientX - drag.x) * r / view.ppu;
+      view.cy += (e.clientY - drag.y) * r / view.ppu;
+      drag.x = e.clientX; drag.y = e.clientY;
+      viewChanged();
+    }
+  } else if ((tool === "measure" || tool === "area") && !hoverPending) {
+    // live snap marker and rubber band, at most once per frame
+    hoverPending = true;
+    const shift = e.shiftKey;
+    requestAnimationFrame(() => {
+      hoverPending = false;
+      if (cursorWorld) { hover = toolPoint(cursorWorld[0], cursorWorld[1], shift); drawOverlay(); }
+    });
+  }
+});
+canvas.addEventListener("pointerleave", () => { cursorWorld = null; hover = null; updateStatus(); drawOverlay(); });
+canvas.addEventListener("pointerup", (e) => {
+  const d = drag;
+  drag = null;
+  canvas.classList.remove("drag");
+  if (!d || !meta) return;
+  if (d.rect && d.moved && zoomRect) {
+    const [x0, y0, x1, y1] = zoomRect;
+    zoomRect = null;
+    if (x1 - x0 > 8 && y1 - y0 > 8) {
+      const a = toWorld(x0, y1), b = toWorld(x1, y0);
+      fitBox(a[0], a[1], b[0], b[1], 1);
+      viewChanged();
+    } else drawOverlay();
+    return;
+  }
+  if (d.moved || d.button !== 0) return;
+  const r = dpr();
+  const [wx, wy] = toWorld(e.clientX * r, e.clientY * r);
+  if (tool === "info") clickInfo(wx, wy);
+  else if (tool === "measure" || tool === "area") clickTool(wx, wy, e.shiftKey);
+});
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (!meta) return;
+  const r = dpr();
+  const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+  const target = (zoom ? zoom.target : view.ppu) * Math.exp(-dy * ZOOM_SPEED);
+  zoom = { target, ax: e.clientX * r - canvas.width / 2, ay: canvas.height / 2 - e.clientY * r };
+  viewChanged();
+}, { passive: false });
+canvas.addEventListener("dblclick", (e) => {
+  if (!meta) return;
+  if (tool === "area") {
+    // the two clicks of the double click added the same point twice
+    if (pending) { pending.pts.splice(-1, 1); closeArea(); }
+    return;
+  }
+  if (tool === "measure") return;
+  fit(); viewChanged();
+});
+window.addEventListener("resize", () => { if (meta) { resize(); renderCache(); requestFrame(); } });
+
+function toggleHelp(show) {
+  $("help").hidden = !show;
+  if (show) $("helpClose").focus();
+}
+window.addEventListener("keydown", (e) => {
+  const typing = e.target instanceof HTMLInputElement && (e.target.type === "search" || e.target.type === "text");
+  if (!$("help").hidden) { if (e.key === "Escape") toggleHelp(false); return; }
+  if (typing) return;
+  const k = e.key.toLowerCase();
+  if (e.key === "Escape") {
+    if (pending) { pending = null; hover = null; drawOverlay(); }
+    else if (zoomRect) { zoomRect = null; drawOverlay(); }
+    else clearSelection();
+  } else if (e.key === "Delete") clearMeasures();
+  else if (e.key === "Enter" && tool === "area") closeArea();
+  else if (e.key === "Backspace" && tool === "area" && pending) { pending.pts.pop(); if (!pending.pts.length) pending = null; drawOverlay(); }
+  else if (e.key === "/" || (k === "f" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); $("q").focus(); }
+  else if (e.ctrlKey || e.metaKey || e.altKey) return;
+  else if (k === "i") setTool("info");
+  else if (k === "m") setTool("measure");
+  else if (k === "a") setTool("area");
+  else if (k === "z") setTool("zoom");
+  else if (k === "f") { fit(); viewChanged(); }
+  else if (k === "s") { settings.snap = !settings.snap; $("bSnap").setAttribute("aria-pressed", String(settings.snap)); save(); }
+  else if (k === "l") { settings.panel = !settings.panel; applyPanel(); }
+  else if (e.key === "?") toggleHelp(true);
+});
+
+// ---------- UI wiring ----------
+for (const b of document.querySelectorAll("#top [data-tool]")) b.addEventListener("click", () => setTool(b.dataset.tool));
+$("bFit").addEventListener("click", () => { if (meta) { fit(); viewChanged(); } });
+$("bClear").addEventListener("click", clearMeasures);
+$("bPanel").addEventListener("click", () => { settings.panel = !settings.panel; applyPanel(); });
+$("bPng").addEventListener("click", exportPng);
+$("bHelp").addEventListener("click", () => toggleHelp(true));
+$("helpClose").addEventListener("click", () => toggleHelp(false));
+$("help").addEventListener("click", (e) => { if (e.target === $("help")) toggleHelp(false); });
+$("bSnap").setAttribute("aria-pressed", String(settings.snap));
+$("bSnap").addEventListener("click", () => { settings.snap = !settings.snap; $("bSnap").setAttribute("aria-pressed", String(settings.snap)); save(); });
+for (const b of document.querySelectorAll("#tabs [data-tab]")) b.addEventListener("click", () => openPanel(b.dataset.tab));
+
+$("q").addEventListener("input", runSearch);
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); goToMatch(e.shiftKey ? -1 : 1); }
+  else if (e.key === "Escape") { $("q").value = ""; runSearch(); $("q").blur(); }
+});
+$("qPrev").addEventListener("click", () => goToMatch(-1));
+$("qNext").addEventListener("click", () => goToMatch(1));
+
+$("lf").addEventListener("input", renderLayers);
+$("lAll").addEventListener("click", () => { layers.forEach((l) => { l.on = true; }); layersChanged(); });
+$("lNone").addEventListener("click", () => { layers.forEach((l) => { l.on = false; }); layersChanged(); });
+$("lInv").addEventListener("click", () => { layers.forEach((l) => { l.on = !l.on; }); layersChanged(); });
+$("layerList").addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.dataset.vis) { layers[+t.dataset.vis].on = t.checked; layersChanged(); }
+});
+$("layerList").addEventListener("input", (e) => {
+  const t = e.target;
+  if (t.dataset.col) { layers[+t.dataset.col].color = t.value; uploadLayers(); redraw(); }
+});
+$("layerList").addEventListener("click", (e) => {
+  const t = e.target.closest("button");
+  if (!t) return;
+  if (t.dataset.reset) { layers[+t.dataset.reset].color = null; layersChanged(); }
+  if (t.dataset.solo) { const i = +t.dataset.solo; layers.forEach((l, j) => { l.on = j === i; }); layersChanged(); }
+});
+// re-render the list once a color pick is finished (shows the reset button)
+$("layerList").addEventListener("focusout", (e) => { if (e.target.dataset?.col) renderLayers(); });
+
+$("themes").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-theme]");
+  if (!b) return;
+  const t = THEMES[b.dataset.theme];
+  settings.theme = b.dataset.theme;
+  settings.bg = t.bg;
+  if (t.mono) settings.mono = t.ink;
+  applyLook();
+});
+$("cBg").addEventListener("input", (e) => { settings.bg = e.target.value; applyLook(); });
+$("cMono").addEventListener("input", (e) => { settings.mono = e.target.value; applyLook(); });
+$("cSel").addEventListener("input", (e) => { settings.sel = e.target.value; save(); drawOverlay(); });
+$("cAdapt").addEventListener("change", (e) => { settings.adapt = e.target.checked; applyLook(); });
+$("eText").addEventListener("change", (e) => { settings.texts = e.target.checked; save(); if ($("q").value) runSearch(); redraw(); });
+$("eFill").addEventListener("change", (e) => { settings.fills = e.target.checked; save(); redraw(); });
+$("bReset").addEventListener("click", () => {
+  const keepPanel = settings.panel;
+  settings = structuredClone(DEFAULTS);
+  settings.panel = keepPanel;
+  settings.tab = "look";
+  layers.forEach((l) => { l.on = l.dwgOn; l.color = null; });
+  layersChanged();
+  $("bSnap").setAttribute("aria-pressed", String(settings.snap));
+  applyLook();
+  applyPanel();
+});
+
+load().catch((err) => { const l = $("loading"); if (l) l.textContent = "Error: " + err.message; console.error(err); });
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+[package]
+name = "cadglance"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Desktop viewer only (feature "desktop"); the library, cadglance-stat and cadglance-web have no dependencies.
+eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "default_fonts", "wayland", "x11"], optional = true }
+rfd = { version = "0.17.2", optional = true }
+# Same wgpu as eframe, with its default features: enables the Vulkan/DX12/Metal/GL backends.
+wgpu = { version = "27.0.1", optional = true }
+# Glyph rasterization for the text atlas (same version egui already uses).
+ab_glyph = { version = "0.2.32", optional = true }
+
+[features]
+desktop = ["dep:eframe", "dep:rfd", "dep:wgpu", "dep:ab_glyph"]
+
+[[bin]]
+name = "cadglance"
+required-features = ["desktop"]
