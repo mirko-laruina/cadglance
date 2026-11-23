@@ -1,8 +1,9 @@
-//! 2D entity prescriptions (ODA spec 20.4), R2010+ only. Z values are read and dropped.
+//! 2D entity prescriptions (ODA spec 20.4), R2000 and R2010+. Z values are read and dropped.
 
 use crate::bits::Bits;
-use crate::container::Result;
-use crate::objects::{Color, Frame, ent_common, ent_common_handles};
+use crate::container::{Result, Version};
+use crate::drawing::pending_chain;
+use crate::objects::{Color, Frame, ent_common, ent_common_handles, tv};
 
 pub type P2 = [f64; 2];
 
@@ -21,6 +22,8 @@ pub struct Entity {
     pub kind: Kind,
     /// True if the prescription consumed the data stream exactly (format self-check).
     pub exact: bool,
+    /// R2000 only: next entity in the owner's chain (0 = none).
+    pub next: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +133,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
         _ => f.type_code,
     };
     let hbudget = f.handles.remaining();
+    let ver = f.ver;
     let r = &mut f.main;
     let mut tail_handles = TailHandles::None;
     let kind = match code {
@@ -179,8 +183,8 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             let end = r.bd()?;
             Kind::Ellipse { center: xy(center), major: xy(major), ratio, start, end }
         }
-        36 => spline(r)?,
-        77 => lwpolyline(r)?,
+        36 => spline(r, ver)?,
+        77 => lwpolyline(r, ver)?,
         15 => {
             let flags = r.bs()?;
             r.bs()?; // curve type
@@ -189,7 +193,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             r.bt()?;
             r.bd()?; // elevation
             let extrusion = r.be()?;
-            let owned = r.count_in(8, hbudget)?;
+            let owned = if ver >= Version::R2010 { r.count_in(8, hbudget)? } else { 0 };
             tail_handles = TailHandles::Owned { owned };
             Kind::Polyline2d { closed: flags & 1 != 0, vertices: Vec::new(), extrusion }
         }
@@ -201,7 +205,9 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
                 r.bd()?;
             }
             let bulge = r.bd()?;
-            r.bl()?; // vertex id
+            if ver >= Version::R2010 {
+                r.bl()?; // vertex id
+            }
             r.bd()?; // tangent dir
             Kind::Vertex2d { p: xy(p), bulge }
         }
@@ -213,24 +219,30 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             Kind::Solid { corners, extrusion }
         }
         1 => {
-            let t = text(r, f.strings.as_mut())?;
+            let t = text(r, f.strings.as_mut(), ver)?;
             tail_handles = TailHandles::Style;
             Kind::Text(t)
         }
         2 | 3 => {
-            let t = text(r, f.strings.as_mut())?;
-            r.rc()?; // version
-            let attr_type = r.rc()?;
+            let t = text(r, f.strings.as_mut(), ver)?;
+            if ver >= Version::R2010 {
+                r.rc()?; // version
+            }
+            let attr_type = if ver >= Version::R2018 { r.rc()? } else { 1 };
             let mut tag = String::new();
             let mut flags = 0;
             if attr_type == 1 {
-                tag = tv(f.strings.as_mut())?;
+                tag = tv(r, f.strings.as_mut(), ver)?;
                 r.bs()?;
                 flags = r.rc()?;
-                r.b()?;
+                if ver >= Version::R2010 {
+                    r.b()?; // lock position
+                }
                 if code == 3 {
-                    r.rc()?; // version
-                    tv(f.strings.as_mut())?; // prompt
+                    if ver >= Version::R2010 {
+                        r.rc()?; // version
+                    }
+                    tv(r, f.strings.as_mut(), ver)?; // prompt
                 }
             }
             // Multi-line attributes embed a whole MTEXT: not decoded, `exact` reports it.
@@ -242,23 +254,27 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             r.bd3()?; // extrusion
             let x_dir = r.bd3()?;
             let rect_width = r.bd()?;
-            r.bd()?; // rect height
+            if ver >= Version::R2010 {
+                r.bd()?; // rect height
+            }
             let height = r.bd()?;
             let attachment = r.bs()?;
             r.bs()?; // drawing dir
             r.bd()?;
             r.bd()?; // extents
-            let value = tv(f.strings.as_mut())?;
+            let value = tv(r, f.strings.as_mut(), ver)?;
             r.bs()?;
             r.bd()?;
             r.b()?;
-            let bg = r.bl()?;
-            if bg & 0x11 != 0 {
-                r.bd()?; // scale factor (spec says BL; BD matches the data)
-                cmc(r, f.strings.as_mut())?;
-                r.bl()?;
+            if ver >= Version::R2010 {
+                let bg = r.bl()?;
+                if bg & 0x11 != 0 {
+                    r.bd()?; // scale factor (spec says BL; BD matches the data)
+                    cmc(r, f.strings.as_mut(), ver)?;
+                    r.bl()?;
+                }
             }
-            let annotative_not = r.b()?;
+            let annotative_not = ver >= Version::R2018 && r.b()?;
             if annotative_not {
                 r.bs()?;
                 r.b()?;
@@ -309,7 +325,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             let rotation = r.bd()?;
             let extrusion = r.bd3()?;
             let has_attribs = r.b()?;
-            let owned = if has_attribs { r.count_in(8, hbudget)? } else { 0 };
+            let owned = if has_attribs && ver >= Version::R2010 { r.count_in(8, hbudget)? } else { 0 };
             let (mut cols, mut rows, mut col_spacing, mut row_spacing) = (1u16, 1u16, 0.0, 0.0);
             if code == 8 {
                 cols = r.bs()? as u16;
@@ -317,7 +333,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
                 col_spacing = r.bd()?;
                 row_spacing = r.bd()?;
             }
-            tail_handles = TailHandles::Insert { owned };
+            tail_handles = TailHandles::Insert { owned, has_attribs };
             Kind::Insert {
                 block: 0,
                 insert: xy(insert),
@@ -332,12 +348,12 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             }
         }
         20..=26 => {
-            dimension(r, code, f.strings.as_mut())?;
+            dimension(r, code, f.strings.as_mut(), ver)?;
             tail_handles = TailHandles::Dimension;
             Kind::Dimension { block: 0 }
         }
-        78 => hatch(r, f.strings.as_mut(), &mut tail_handles, hbudget)?,
-        34 => viewport(r, f.strings.as_mut(), &mut tail_handles, hbudget)?,
+        78 => hatch(r, f.strings.as_mut(), ver, &mut tail_handles, hbudget)?,
+        34 => viewport(r, f.strings.as_mut(), ver, &mut tail_handles, hbudget)?,
         _ => Kind::Other,
     };
 
@@ -346,12 +362,23 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
     let mut kind = kind;
     match (&mut kind, tail_handles) {
         (Kind::Polyline2d { vertices, .. }, TailHandles::Owned { owned }) => {
+            if ver == Version::R2000 {
+                let first = f.href()?;
+                *vertices = pending_chain(first, f.href()?);
+            }
             for _ in 0..owned {
                 vertices.push(f.href()?);
             }
         }
-        (Kind::Insert { block, attribs, .. }, TailHandles::Insert { owned }) => {
+        (Kind::Insert { block, attribs, .. }, TailHandles::Insert { owned, has_attribs }) => {
             *block = f.href()?;
+            if ver == Version::R2000 && has_attribs {
+                let first = f.href()?;
+                let last = f.href()?;
+                if first != 0 {
+                    *attribs = pending_chain(first, last);
+                }
+            }
             for _ in 0..owned {
                 attribs.push(f.href()?);
             }
@@ -378,7 +405,14 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
         owner: h.owner,
         kind,
         exact,
+        next: h.next,
     })
+}
+
+/// R2000: the next entity of a frame whose prescription failed, so the owner's chain goes on.
+pub fn entity_next(f: &mut Frame) -> Result<u64> {
+    let c = ent_common(f)?;
+    Ok(ent_common_handles(f, &c)?.next)
 }
 
 enum TailHandles {
@@ -386,20 +420,16 @@ enum TailHandles {
     Style,
     MTextApp,
     Owned { owned: usize },
-    Insert { owned: usize },
+    Insert { owned: usize, has_attribs: bool },
     Dimension,
     Viewport { frozen: usize },
 }
 
-fn tv(s: Option<&mut Bits>) -> Result<String> {
-    match s {
-        Some(s) => s.tu(),
-        None => Ok(String::new()),
-    }
-}
-
-fn cmc(r: &mut Bits, s: Option<&mut Bits>) -> Result<()> {
+fn cmc(r: &mut Bits, s: Option<&mut Bits>, ver: Version) -> Result<()> {
     r.bs()?;
+    if ver == Version::R2000 {
+        return Ok(());
+    }
     r.bl()?;
     let flags = r.rc()?;
     if let Some(s) = s {
@@ -413,7 +443,7 @@ fn cmc(r: &mut Bits, s: Option<&mut Bits>) -> Result<()> {
     Ok(())
 }
 
-fn text(r: &mut Bits, s: Option<&mut Bits>) -> Result<Text> {
+fn text(r: &mut Bits, s: Option<&mut Bits>, ver: Version) -> Result<Text> {
     let flags = r.rc()?;
     if flags & 0x01 == 0 {
         r.rd()?; // elevation
@@ -426,7 +456,7 @@ fn text(r: &mut Bits, s: Option<&mut Bits>) -> Result<Text> {
     let rotation = if flags & 0x08 == 0 { r.rd()? } else { 0.0 };
     let height = r.rd()?;
     let width_factor = if flags & 0x10 == 0 { r.rd()? } else { 1.0 };
-    let value = tv(s)?;
+    let value = tv(r, s, ver)?;
     if flags & 0x20 == 0 {
         r.bs()?; // generation
     }
@@ -435,10 +465,9 @@ fn text(r: &mut Bits, s: Option<&mut Bits>) -> Result<Text> {
     Ok(Text { insert, align, height, rotation, width_factor, oblique, halign, valign, value, extrusion, style: 0 })
 }
 
-fn spline(r: &mut Bits) -> Result<Kind> {
+fn spline(r: &mut Bits, ver: Version) -> Result<Kind> {
     let scenario = r.bl()?;
-    let flags1 = r.bl()?; // R2013+
-    let knot_param = r.bl()?;
+    let (flags1, knot_param) = if ver >= Version::R2013 { (r.bl()?, r.bl()?) } else { (0, 0) };
     let degree = r.bl()? as u32;
     let mut closed = flags1 & 4 != 0;
     let (mut nknots, mut nctrl, mut nfit, mut weighted) = (0usize, 0usize, 0usize, false);
@@ -479,7 +508,7 @@ fn spline(r: &mut Bits) -> Result<Kind> {
     Ok(Kind::Spline { degree, closed, knots, ctrl, weights, fit, tangents, knot_param })
 }
 
-fn lwpolyline(r: &mut Bits) -> Result<Kind> {
+fn lwpolyline(r: &mut Bits, ver: Version) -> Result<Kind> {
     let flag = r.bs()?;
     let const_width = if flag & 4 != 0 { r.bd()? } else { 0.0 };
     if flag & 8 != 0 {
@@ -491,7 +520,7 @@ fn lwpolyline(r: &mut Bits) -> Result<Kind> {
     let extrusion = if flag & 1 != 0 { r.bd3()? } else { [0.0, 0.0, 1.0] };
     let n = r.count()?;
     let nbulges = if flag & 16 != 0 { r.count()? } else { 0 };
-    let nids = if flag & 1024 != 0 { r.count()? } else { 0 };
+    let nids = if flag & 1024 != 0 && ver >= Version::R2010 { r.count()? } else { 0 };
     let nwidths = if flag & 32 != 0 { r.count()? } else { 0 };
     let mut pts: Vec<P2> = Vec::with_capacity(n);
     if n > 0 {
@@ -515,13 +544,15 @@ fn lwpolyline(r: &mut Bits) -> Result<Kind> {
     Ok(Kind::LwPolyline { closed: flag & 512 != 0, pts, bulges, const_width, extrusion })
 }
 
-fn dimension(r: &mut Bits, code: u16, s: Option<&mut Bits>) -> Result<()> {
-    r.rc()?; // version
+fn dimension(r: &mut Bits, code: u16, s: Option<&mut Bits>, ver: Version) -> Result<()> {
+    if ver >= Version::R2010 {
+        r.rc()?; // version
+    }
     r.bd3()?;
     r.rd2()?;
     r.bd()?;
     r.rc()?;
-    tv(s)?;
+    tv(r, s, ver)?;
     for _ in 0..6 {
         // text rotation, horizontal dir, insert scale x/y/z, insert rotation
         r.bd()?;
@@ -530,9 +561,11 @@ fn dimension(r: &mut Bits, code: u16, s: Option<&mut Bits>) -> Result<()> {
     r.bs()?;
     r.bd()?;
     r.bd()?;
-    r.b()?;
-    r.b()?;
-    r.b()?;
+    if ver >= Version::R2010 {
+        r.b()?;
+        r.b()?;
+        r.b()?;
+    }
     r.rd2()?; // 12-pt
     match code {
         20 => {
@@ -579,24 +612,27 @@ fn dimension(r: &mut Bits, code: u16, s: Option<&mut Bits>) -> Result<()> {
     Ok(())
 }
 
-fn hatch(r: &mut Bits, mut s: Option<&mut Bits>, tail: &mut TailHandles, hbudget: usize) -> Result<Kind> {
-    let gradient = r.bl()?;
-    r.bl()?;
-    r.bd()?;
-    r.bd()?;
-    r.bl()?;
-    r.bd()?;
-    let ncolors = r.bl()?;
-    for _ in 0..ncolors {
-        r.bd()?;
-        r.bs()?;
+fn hatch(r: &mut Bits, mut s: Option<&mut Bits>, ver: Version, tail: &mut TailHandles, hbudget: usize) -> Result<Kind> {
+    let mut gradient = 0;
+    if ver >= Version::R2010 {
+        gradient = r.bl()?;
         r.bl()?;
-        r.rc()?;
+        r.bd()?;
+        r.bd()?;
+        r.bl()?;
+        r.bd()?;
+        let ncolors = r.bl()?;
+        for _ in 0..ncolors {
+            r.bd()?;
+            r.bs()?;
+            r.bl()?;
+            r.rc()?;
+        }
+        tv(r, s.as_deref_mut(), ver)?; // gradient name
     }
-    tv(s.as_deref_mut())?; // gradient name
     r.bd()?; // z
     let extrusion = r.bd3()?;
-    tv(s)?; // pattern name
+    tv(r, s, ver)?; // pattern name
     let solid = r.b()?;
     r.b()?;
     let npaths = r.count()?;
@@ -645,12 +681,14 @@ fn hatch(r: &mut Bits, mut s: Option<&mut Bits>, tail: &mut TailHandles, hbudget
                                 weights.push(r.bd()?);
                             }
                         }
-                        let nfit = r.count()?;
-                        for _ in 0..nfit {
-                            r.rd2()?;
+                        if ver >= Version::R2010 {
+                            let nfit = r.count()?;
+                            for _ in 0..nfit {
+                                r.rd2()?;
+                            }
+                            r.rd2()?; // start tangent
+                            r.rd2()?; // end tangent
                         }
-                        r.rd2()?; // start tangent
-                        r.rd2()?; // end tangent
                         HatchSeg::Spline { degree, knots, ctrl, weights }
                     }
                     t => {
@@ -707,7 +745,7 @@ fn hatch(r: &mut Bits, mut s: Option<&mut Bits>, tail: &mut TailHandles, hbudget
     Ok(Kind::Hatch { solid: solid || gradient != 0, paths, pattern, extrusion })
 }
 
-fn viewport(r: &mut Bits, s: Option<&mut Bits>, tail: &mut TailHandles, hbudget: usize) -> Result<Kind> {
+fn viewport(r: &mut Bits, s: Option<&mut Bits>, ver: Version, tail: &mut TailHandles, hbudget: usize) -> Result<Kind> {
     let center = r.bd3()?;
     let width = r.bd()?;
     let height = r.bd()?;
@@ -723,11 +761,13 @@ fn viewport(r: &mut Bits, s: Option<&mut Bits>, tail: &mut TailHandles, hbudget:
         r.rd2()?;
     }
     r.bs()?;
-    r.bs()?; // grid major
+    if ver >= Version::R2010 {
+        r.bs()?; // grid major
+    }
     let frozen = r.count_in(8, hbudget)?;
     let status = r.bl()? as u32;
     let mut s = s;
-    tv(s.as_deref_mut())?; // style sheet
+    tv(r, s.as_deref_mut(), ver)?; // style sheet
     r.rc()?;
     r.b()?;
     r.b()?;
@@ -736,12 +776,14 @@ fn viewport(r: &mut Bits, s: Option<&mut Bits>, tail: &mut TailHandles, hbudget:
     r.bd3()?;
     r.bd()?;
     r.bs()?;
-    r.bs()?; // shadeplot mode
-    r.b()?;
-    r.rc()?;
-    r.bd()?;
-    r.bd()?;
-    cmc(r, s)?;
+    if ver >= Version::R2010 {
+        r.bs()?; // shadeplot mode
+        r.b()?;
+        r.rc()?;
+        r.bd()?;
+        r.bd()?;
+        cmc(r, s, ver)?;
+    }
     *tail = TailHandles::Viewport { frozen };
     Ok(Kind::Viewport {
         center: xy(center),

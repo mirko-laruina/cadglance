@@ -1,5 +1,5 @@
-//! R2004+ file container (ODA spec ch. 4): encrypted file header, page map,
-//! section map and compressed data pages.
+//! File container. R2004+ (ODA spec ch. 4): encrypted file header, page map, section map and
+//! compressed data pages. R2000 (spec ch. 3): section locators to plain sections, no compression.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -22,6 +22,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(Error(msg.into()))
 }
+
+/// File format versions this reader knows, in release order. R2004/R2007 are not supported, so
+/// a field marked "R2004+" or "R2007+" in the spec applies to R2010 and later here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Version {
+    R2000,
+    R2010,
+    R2013,
+    R2018,
+}
+
+const R2000_HEADER_SENTINEL: [u8; 16] =
+    [0x95, 0xA0, 0x4E, 0x28, 0x99, 0x82, 0x1A, 0xE5, 0x5E, 0x41, 0xE0, 0x5F, 0x9D, 0x3A, 0x4D, 0x00];
 
 const PAGE_MAP_TYPE: u32 = 0x4163_0E3B;
 const SECTION_MAP_TYPE: u32 = 0x4163_003B;
@@ -60,8 +73,11 @@ pub struct Container<'a> {
     pub raw: &'a [u8],
     pub version: String,
     pub maint_version: u8,
+    pub ver: Version,
     pub sections: Vec<SectionInfo>,
     page_addr: HashMap<i32, usize>,
+    /// R2000 only: section name -> (file offset, size) from the section locators.
+    plain: HashMap<String, (usize, usize)>,
 }
 
 impl<'a> Container<'a> {
@@ -70,10 +86,18 @@ impl<'a> Container<'a> {
             return err("file too small");
         }
         let version = String::from_utf8_lossy(&raw[..6]).into_owned();
-        if !matches!(version.as_str(), "AC1024" | "AC1027" | "AC1032") {
-            return err(format!("unsupported version {version} (only R2010+ supported)"));
-        }
+        let ver = match version.as_str() {
+            "AC1015" => Version::R2000,
+            "AC1024" => Version::R2010,
+            "AC1027" => Version::R2013,
+            "AC1032" => Version::R2018,
+            _ => return err(format!("unsupported version {version} (supported: AC1015, AC1024, AC1027, AC1032)")),
+        };
         let maint_version = raw[0x0B];
+        if ver == Version::R2000 {
+            let plain = r2000_locators(raw)?;
+            return Ok(Container { raw, version, maint_version, ver, sections: Vec::new(), page_addr: HashMap::new(), plain });
+        }
 
         let mut hdr = [0u8; 0x6C];
         hdr.copy_from_slice(&raw[0x80..0x80 + 0x6C]);
@@ -128,7 +152,7 @@ impl<'a> Container<'a> {
             sections.push(SectionInfo { name, size, max_page_size, compressed, encrypted, pages });
         }
 
-        Ok(Container { raw, version, maint_version, sections, page_addr })
+        Ok(Container { raw, version, maint_version, ver, sections, page_addr, plain: HashMap::new() })
     }
 
     pub fn section_info(&self, name: &str) -> Option<&SectionInfo> {
@@ -136,7 +160,20 @@ impl<'a> Container<'a> {
     }
 
     /// Decompress a whole logical section. Pages are decompressed on `threads` threads.
+    /// R2000: "AcDb:AcDbObjects" is the whole file, because object map offsets are file offsets.
     pub fn section(&self, name: &str, threads: usize) -> Result<Vec<u8>> {
+        if self.ver == Version::R2000 {
+            if name == "AcDb:AcDbObjects" {
+                // shortcut: copies the whole file; switch to a borrowed slice if memory matters on big R2000 files.
+                return Ok(self.raw.to_vec());
+            }
+            let &(at, size) = self.plain.get(name).ok_or_else(|| Error(format!("section {name} not found")))?;
+            return self
+                .raw
+                .get(at..at + size)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| Error(format!("section {name} past end of file")));
+        }
         let info = self
             .section_info(name)
             .ok_or_else(|| Error(format!("section {name} not found")))?;
@@ -216,6 +253,42 @@ impl<'a> Container<'a> {
     }
 }
 
+/// R2000 section locators at 0x15 (spec 3.2.6): record number, seeker, size.
+fn r2000_locators(raw: &[u8]) -> Result<HashMap<String, (usize, usize)>> {
+    let n = u32le(raw, 0x15)? as usize;
+    if !(3..=6).contains(&n) {
+        return err(format!("R2000 header: {n} section locators"));
+    }
+    let mut out = HashMap::new();
+    for k in 0..n {
+        let o = 0x19 + 9 * k;
+        let num = *raw.get(o).ok_or_else(|| Error("R2000 header truncated".into()))?;
+        let (at, size) = (u32le(raw, o + 1)? as usize, u32le(raw, o + 5)? as usize);
+        let name = match num {
+            0 => "AcDb:Header",
+            1 => "AcDb:Classes",
+            2 => "AcDb:Handles",
+            _ => continue,
+        };
+        out.insert(name.to_string(), (at, size));
+    }
+    let end = 0x19 + 9 * n;
+    let stored = raw.get(end..end + 2).map(|s| u16::from_le_bytes([s[0], s[1]])).unwrap_or(0);
+    let xor = [0xA598, 0x8101, 0x3CC4, 0x8461][n - 3];
+    if crate::crc::crc8(0, &raw[..end]) ^ xor != stored {
+        return err("R2000 header: bad CRC");
+    }
+    if raw.get(end + 2..end + 18) != Some(&R2000_HEADER_SENTINEL[..]) {
+        return err("R2000 header: bad sentinel");
+    }
+    for name in ["AcDb:Classes", "AcDb:Handles"] {
+        if !out.contains_key(name) {
+            return err(format!("R2000 header: no locator for {name}"));
+        }
+    }
+    Ok(out)
+}
+
 fn system_page(raw: &[u8], addr: usize, expected_type: u32) -> Result<Vec<u8>> {
     let typ = u32le(raw, addr)?;
     if typ != expected_type {
@@ -236,4 +309,39 @@ fn system_page(raw: &[u8], addr: usize, expected_type: u32) -> Result<Vec<u8>> {
         return err(format!("system page at {addr:#x}: decompressed {n} B, expected {dsize}"));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal R2000 header: 3 locators (header, classes, object map), CRC, sentinel.
+    fn r2000_header() -> Vec<u8> {
+        let mut d = b"AC1015".to_vec();
+        d.resize(0x15, 0);
+        d.extend(3u32.to_le_bytes());
+        for (num, at, size) in [(0u8, 0x100u32, 0x40u32), (1, 0x200, 0x30), (2, 0x300, 0x20)] {
+            d.push(num);
+            d.extend(at.to_le_bytes());
+            d.extend(size.to_le_bytes());
+        }
+        let crc = crate::crc::crc8(0, &d) ^ 0xA598;
+        d.extend(crc.to_le_bytes());
+        d.extend(R2000_HEADER_SENTINEL);
+        d
+    }
+
+    #[test]
+    fn r2000_section_locators() {
+        let m = r2000_locators(&r2000_header()).unwrap();
+        assert_eq!(m["AcDb:Classes"], (0x200, 0x30));
+        assert_eq!(m["AcDb:Handles"], (0x300, 0x20));
+    }
+
+    #[test]
+    fn r2000_bad_crc() {
+        let mut d = r2000_header();
+        d[0x1A] ^= 1;
+        assert!(r2000_locators(&d).is_err());
+    }
 }

@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::classes::{Class, parse_classes};
-use crate::container::{Container, Result};
-use crate::entities::{Entity, parse_entity};
+use crate::container::{Container, Result, Version};
+use crate::entities::{Entity, Kind, entity_next, parse_entity};
 use crate::handles::parse_object_map;
-use crate::objects::{Color, Frame, obj_common, obj_common_handles};
+use crate::objects::{Color, Frame, cmc_color, obj_common, obj_common_handles, tv};
 
 pub const TYPE_BLOCK_HEADER: u16 = 49;
 pub const TYPE_LAYER: u16 = 51;
@@ -23,6 +23,9 @@ pub struct BlockRecord {
     pub layout: u64,
     pub exact: bool,
 }
+
+/// R2000 owners store only the first and last member; members link to the next one.
+const CHAIN_PENDING: u64 = u64::MAX;
 
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -187,7 +190,7 @@ impl Drawing {
         let t1 = Instant::now();
         let objects = c.section("AcDb:AcDbObjects", threads)?;
         let handles = c.section("AcDb:Handles", 1)?;
-        let classes = parse_classes(&c.section("AcDb:Classes", 1)?)?;
+        let classes = parse_classes(&c.section("AcDb:Classes", 1)?, c.ver)?;
         let decompress = t1.elapsed();
 
         let t2 = Instant::now();
@@ -197,17 +200,25 @@ impl Drawing {
         let t3 = Instant::now();
         let threads = threads.max(1);
         let chunk = map.len().div_ceil(threads).max(1);
+        let broken_next = std::sync::Mutex::new(HashMap::new());
         let results: Vec<Vec<(u64, u16, Result<Parsed>)>> = std::thread::scope(|s| {
             let workers: Vec<_> = map
                 .chunks(chunk)
                 .map(|part| {
-                    let (objects, classes) = (&objects, &classes);
+                    let (objects, classes, ver, broken_next) = (&objects, &classes, c.ver, &broken_next);
                     s.spawn(move || {
                         part.iter()
-                            .map(|&(h, off)| match Frame::parse(objects, off) {
+                            .map(|&(h, off)| match Frame::parse(objects, off, ver) {
                                 Ok(mut f) => {
                                     let t = f.type_code;
-                                    (h, t, parse_one(&mut f, classes))
+                                    let res = parse_one(&mut f, classes);
+                                    if res.is_err() && ver == Version::R2000 && is_entity_type(classes, t) {
+                                        // Keep the chain link of a failed entity.
+                                        if let Some(next) = Frame::parse(objects, off, ver).ok().and_then(|mut f| entity_next(&mut f).ok()) {
+                                            broken_next.lock().unwrap().insert(h, next);
+                                        }
+                                    }
+                                    (h, t, res)
                                 }
                                 Err(e) => (h, 0, Err(e)),
                             })
@@ -253,9 +264,61 @@ impl Drawing {
             }
         }
         d.layouts.sort_by_key(|l| l.tab_order);
+        if c.ver == Version::R2000 {
+            d.resolve_chains(&broken_next.into_inner().unwrap());
+        }
         d.timings = Timings { read_container, decompress, index, parse, merge: t4.elapsed() };
         Ok(d)
     }
+}
+
+impl Drawing {
+    /// R2000: expand (first, last) member pairs into the full lists by following `Entity::next`.
+    /// `broken_next` holds the links of entities whose prescription failed.
+    fn resolve_chains(&mut self, broken_next: &HashMap<u64, u64>) {
+        let entities = &self.entities;
+        let chain = |v: &mut Vec<u64>| {
+            if v.len() != 3 || v[0] != CHAIN_PENDING {
+                return;
+            }
+            let (first, last) = (v[1], v[2]);
+            v.clear();
+            let mut h = first;
+            // The guard stops a broken or cyclic chain.
+            while h != 0 && v.len() <= entities.len() {
+                v.push(h);
+                if h == last {
+                    break;
+                }
+                h = entities.get(&h).map(|e| e.next).or_else(|| broken_next.get(&h).copied()).unwrap_or(0);
+            }
+        };
+        for b in self.blocks.values_mut() {
+            chain(&mut b.entities);
+        }
+        let mut pending: Vec<(u64, Vec<u64>)> = Vec::new();
+        for (&h, e) in &self.entities {
+            if let Kind::Polyline2d { vertices: v, .. } | Kind::Insert { attribs: v, .. } = &e.kind {
+                if v.first() == Some(&CHAIN_PENDING) {
+                    let mut v = v.clone();
+                    chain(&mut v);
+                    pending.push((h, v));
+                }
+            }
+        }
+        for (h, list) in pending {
+            if let Some(e) = self.entities.get_mut(&h) {
+                if let Kind::Polyline2d { vertices: v, .. } | Kind::Insert { attribs: v, .. } = &mut e.kind {
+                    *v = list;
+                }
+            }
+        }
+    }
+}
+
+/// R2000 chain placeholder for a member list: resolved by `Drawing::resolve_chains`.
+pub(crate) fn pending_chain(first: u64, last: u64) -> Vec<u64> {
+    vec![CHAIN_PENDING, first, last]
 }
 
 fn parse_one(f: &mut Frame, classes: &[Class]) -> Result<Parsed> {
@@ -277,36 +340,48 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
     let c = obj_common(f)?;
     let name = f.tv()?;
     let hbudget = f.handles.remaining();
+    let ver = f.ver;
     let r = &mut f.main;
-    table_entry_flags(r)?;
+    table_entry_flags(r, ver)?;
     r.b()?; // anonymous
     r.b()?; // has attdefs
-    r.b()?; // is xref
-    r.b()?; // xref overlaid
+    let is_xref = r.b()?;
+    let overlaid = r.b()?;
     r.b()?; // loaded
-    let owned = r.count_in(8, hbudget)?;
+    let owned = if ver >= Version::R2010 { r.count_in(8, hbudget)? } else { 0 };
     let base = r.bd3()?;
     let base = [base[0], base[1]];
+    tv(r, f.strings.as_mut(), ver)?; // xref path
     let mut inserts = 0usize;
     while r.rc()? != 0 {
         inserts += 1;
     }
+    tv(r, f.strings.as_mut(), ver)?; // description
     let preview = r.count_in(8, r.remaining())?;
     r.skip_bytes(preview)?;
-    r.bs()?; // insert units
-    r.b()?; // explodable
-    r.rc()?; // block scaling
-    // Strings after the name: xref path, description.
-    f.tv()?;
-    f.tv()?;
+    if ver >= Version::R2010 {
+        r.bs()?; // insert units
+        r.b()?; // explodable
+        r.rc()?; // block scaling
+    }
     let exact = f.data_fully_read();
 
     obj_common_handles(f, &c)?;
     f.href()?; // NULL
     f.href()?; // BLOCK entity
     let mut entities = Vec::with_capacity(owned);
-    for _ in 0..owned {
-        entities.push(f.href()?);
+    if ver == Version::R2000 {
+        if !is_xref && !overlaid {
+            let first = f.href()?;
+            let last = f.href()?;
+            if first != 0 {
+                entities = pending_chain(first, last);
+            }
+        }
+    } else {
+        for _ in 0..owned {
+            entities.push(f.href()?);
+        }
     }
     f.href()?; // ENDBLK
     for _ in 0..inserts {
@@ -317,9 +392,15 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
 }
 
 /// Table entry flags after the name. The spec lists `64-flag B, xrefindex+1 BS, Xdep B`;
-/// AC1032 data has only the BS (checked by hand on LAYER and BLOCK_HEADER).
-fn table_entry_flags(r: &mut crate::bits::Bits) -> Result<()> {
-    r.bs()?; // xref index + 1
+/// R2000 has all three, AC1032 data has only the BS (checked by hand on LAYER and BLOCK_HEADER).
+fn table_entry_flags(r: &mut crate::bits::Bits, ver: Version) -> Result<()> {
+    if ver == Version::R2000 {
+        r.b()?; // 64-flag
+        r.bs()?; // xref index + 1
+        r.b()?; // xdep
+    } else {
+        r.bs()?; // xref index + 1
+    }
     Ok(())
 }
 
@@ -327,8 +408,15 @@ fn layer(f: &mut Frame) -> Result<Layer> {
     obj_common(f)?;
     let name = f.tv()?;
     let r = &mut f.main;
-    table_entry_flags(r)?;
+    table_entry_flags(r, f.ver)?;
     let flags = r.bs()?; // frozen 1, off 2, frozen in new vp 4, locked 8, plot 16, lineweight 0x3E0
+    if f.ver == Version::R2000 {
+        let color = cmc_color(r.bs()?.abs()); // negative index = layer off
+        if !f.data_fully_read() {
+            return Err(crate::container::Error("LAYER: data stream not fully read".into()));
+        }
+        return Ok(Layer { handle: f.handle, name, flags, color });
+    }
     r.bs()?; // CMC: index
     let rgb = r.bl()? as u32; // CMC: method byte + value
     let color = match rgb >> 24 {
@@ -352,27 +440,39 @@ fn layer(f: &mut Frame) -> Result<Layer> {
 fn layout(f: &mut Frame) -> Result<Layout> {
     let c = obj_common(f)?;
     let hbudget = f.handles.remaining();
+    let ver = f.ver;
     let r = &mut f.main;
+    let mut s = f.strings.as_mut();
     // PLOTSETTINGS part
+    tv(r, s.as_deref_mut(), ver)?; // page setup name
+    tv(r, s.as_deref_mut(), ver)?; // printer / config
     r.bs()?;
     for _ in 0..6 {
         r.bd()?;
     }
+    tv(r, s.as_deref_mut(), ver)?; // paper size
     r.bd2()?;
     r.bs()?;
     r.bs()?;
     r.bs()?;
     r.bd2()?;
     r.bd2()?;
+    if ver == Version::R2000 {
+        tv(r, s.as_deref_mut(), ver)?; // plot view name
+    }
     r.bd()?;
     r.bd()?;
+    tv(r, s.as_deref_mut(), ver)?; // style sheet
     r.bs()?;
     r.bd()?;
     r.bd2()?;
-    r.bs()?;
-    r.bs()?;
-    r.bs()?;
+    if ver >= Version::R2010 {
+        r.bs()?;
+        r.bs()?;
+        r.bs()?;
+    }
     // LAYOUT part
+    let name = tv(r, s, ver)?;
     let tab_order = r.bl()?;
     r.bs()?;
     r.bd3()?;
@@ -385,17 +485,15 @@ fn layout(f: &mut Frame) -> Result<Layout> {
     r.bs()?;
     r.bd3()?;
     r.bd3()?;
-    let nvp = r.count_in(8, hbudget)?; // spec says RL; AC1032 data has a BL
-    // Strings: page setup, printer, paper size, style sheet, layout name.
-    for _ in 0..4 {
-        f.tv()?;
-    }
-    let name = f.tv()?;
+    // spec says RL; AC1032 data has a BL. R2000 has no viewport list.
+    let nvp = if ver >= Version::R2010 { r.count_in(8, hbudget)? } else { 0 };
     let exact = f.data_fully_read();
 
     obj_common_handles(f, &c)?;
-    f.href()?; // plot view
-    f.href()?; // visual style
+    if ver >= Version::R2010 {
+        f.href()?; // plot view
+        f.href()?; // visual style
+    }
     let block_record = f.href()?;
     f.href()?; // last active viewport
     f.href()?; // base ucs
@@ -411,7 +509,7 @@ fn text_style(f: &mut Frame) -> Result<TextStyle> {
     obj_common(f)?;
     let name = f.tv()?;
     let r = &mut f.main;
-    table_entry_flags(r)?;
+    table_entry_flags(r, f.ver)?;
     r.b()?; // vertical
     r.b()?; // shape file
     r.bd()?; // fixed height
@@ -419,8 +517,8 @@ fn text_style(f: &mut Frame) -> Result<TextStyle> {
     let oblique = r.bd()?;
     r.rc()?; // generation
     r.bd()?; // last height
-    let font = f.tv()?;
-    f.tv()?; // big font
+    let font = tv(r, f.strings.as_mut(), f.ver)?;
+    tv(r, f.strings.as_mut(), f.ver)?; // big font
     if !f.data_fully_read() {
         return Err(crate::container::Error("STYLE: data stream not fully read".into()));
     }

@@ -304,9 +304,57 @@ impl<'a> Bits<'a> {
         Ok(String::from_utf16_lossy(&units))
     }
 
+    /// TV before R2007: BS byte count followed by 8-bit text in the drawing code page.
+    // shortcut: always decoded as Windows-1252, the code page at file offset 0x13 is ignored; upgrade for non-Latin drawings.
+    pub fn tv8(&mut self) -> Result<String> {
+        let n = self.bs()? as u16 as usize;
+        let mut s = String::with_capacity(n);
+        for _ in 0..n {
+            let c = self.rc()?;
+            if c != 0 {
+                s.push(cp1252(c));
+            }
+        }
+        Ok(unescape_u(s))
+    }
+
     pub fn align_byte(&mut self) {
         self.pos = self.pos.div_ceil(8) * 8;
     }
+}
+
+/// 8-bit strings write characters outside the code page as `\U+XXXX`.
+fn unescape_u(s: String) -> String {
+    if !s.contains("\\U+") {
+        return s;
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    while let Some(i) = rest.find("\\U+") {
+        out.push_str(&rest[..i]);
+        let c = rest.get(i + 3..i + 7).and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32);
+        match c {
+            Some(c) => {
+                out.push(c);
+                rest = &rest[i + 7..];
+            }
+            None => {
+                out.push_str("\\U+");
+                rest = &rest[i + 3..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Windows-1252 byte to char (0x80-0x9F differ from Latin-1).
+fn cp1252(c: u8) -> char {
+    const HI: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž', '\u{8F}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}', 'ž', 'Ÿ',
+    ];
+    if (0x80..0xA0).contains(&c) { HI[c as usize - 0x80] } else { c as char }
 }
 
 #[cfg(test)]
@@ -319,6 +367,21 @@ mod tests {
         bits.chunks(8)
             .map(|c| c.iter().enumerate().fold(0u8, |acc, (i, b)| acc | (b << (7 - i))))
             .collect()
+    }
+
+    #[test]
+    fn tv8_cp1252_and_unicode_escape() {
+        // BS 9 (bits 00 + RS), then "\U+2205\x80"
+        let mut d = vec![];
+        let mut bits = String::from("00");
+        for b in [9u8, 0] {
+            bits += &format!("{b:08b}");
+        }
+        for b in b"\\U+22055\x80" {
+            bits += &format!("{b:08b}");
+        }
+        d.extend(pack(&bits));
+        assert_eq!(Bits::new(&d).tv8().unwrap(), "\u{2205}5\u{20AC}");
     }
 
     #[test]

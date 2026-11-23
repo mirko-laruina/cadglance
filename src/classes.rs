@@ -1,7 +1,7 @@
 //! AcDb:Classes (ODA spec 10.2 / 5.8): maps object types >= 500 to class names.
 
 use crate::bits::Bits;
-use crate::container::{Error, Result, err};
+use crate::container::{Error, Result, Version, err};
 
 const SENTINEL: [u8; 16] =
     [0x8D, 0xA1, 0xC4, 0xB8, 0xC4, 0xA9, 0xF8, 0xC5, 0xC0, 0xDC, 0xF4, 0x5F, 0xE7, 0xCF, 0xB6, 0x8A];
@@ -16,7 +16,7 @@ pub struct Class {
 
 /// Layout observed on AC1032 (bytes): SN(16), RL size, RL size-high, RL size in bits (at 24),
 /// then the bit data (at 28). The string stream sits at the end of the bit range.
-pub fn parse_classes(data: &[u8]) -> Result<Vec<Class>> {
+pub fn parse_classes(data: &[u8], ver: Version) -> Result<Vec<Class>> {
     if data.get(..16) != Some(&SENTINEL[..]) {
         return err("classes: bad sentinel");
     }
@@ -25,6 +25,9 @@ pub fn parse_classes(data: &[u8]) -> Result<Vec<Class>> {
             .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
             .ok_or_else(|| Error("classes: truncated".into()))
     };
+    if ver == Version::R2000 {
+        return parse_r2000(data, rl(16)? as usize);
+    }
     let bit_size = rl(24)? as usize;
     // The size in bits counts from the bit-size field itself (byte 24); the bit data starts at byte 28.
     let end = 24 * 8 + bit_size;
@@ -69,6 +72,28 @@ pub fn parse_classes(data: &[u8]) -> Result<Vec<Class>> {
         r.bl()?; // maintenance version
         r.bl()?;
         r.bl()?;
+        out.push(Class { number, dxf_name, cpp_name, is_entity: item_class == 0x1F2 });
+    }
+    Ok(out)
+}
+
+/// R2000 (spec 10.1): SN, RL size in bytes, then classes with inline TV strings until the data ends.
+fn parse_r2000(data: &[u8], size: usize) -> Result<Vec<Class>> {
+    let end = (20 + size) * 8;
+    if end > data.len() * 8 {
+        return err("classes: size past end of section");
+    }
+    let mut r = Bits::at(data, 20 * 8, end);
+    let mut out = Vec::new();
+    // Up to 7 padding bits can follow the last class.
+    while r.end - r.pos >= 8 {
+        let number = r.bs()? as u16;
+        r.bs()?; // version / proxy flags
+        let _app = r.tv8()?;
+        let cpp_name = r.tv8()?;
+        let dxf_name = r.tv8()?;
+        r.b()?; // was a zombie
+        let item_class = r.bs()? as u16;
         out.push(Class { number, dxf_name, cpp_name, is_entity: item_class == 0x1F2 });
     }
     Ok(out)

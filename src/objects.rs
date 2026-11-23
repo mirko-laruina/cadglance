@@ -1,7 +1,7 @@
-//! Object framing for R2010+ (ODA spec 20.1/20.2): size, handle stream, string stream, common data.
+//! Object framing (ODA spec 20.1/20.2): size, handle stream, string stream (R2007+), common data.
 
 use crate::bits::{Bits, HandleRef};
-use crate::container::{Error, Result, err};
+use crate::container::{Error, Result, Version, err};
 use crate::crc::crc8;
 
 /// One object split into its three streams.
@@ -15,11 +15,15 @@ pub struct Frame<'a> {
     /// Handle stream.
     pub handles: Bits<'a>,
     pub crc_ok: bool,
+    pub ver: Version,
 }
 
 impl<'a> Frame<'a> {
     /// `objects` is the whole AcDb:AcDbObjects section, `offset` comes from the object map.
-    pub fn parse(objects: &'a [u8], offset: usize) -> Result<Self> {
+    pub fn parse(objects: &'a [u8], offset: usize, ver: Version) -> Result<Self> {
+        if ver == Version::R2000 {
+            return Self::parse_r2000(objects, offset);
+        }
         let mut r = Bits::at(objects, offset * 8, objects.len() * 8);
         let size = r.ms()? as usize;
         let handle_bits = r.umc()? as usize;
@@ -76,15 +80,53 @@ impl<'a> Frame<'a> {
             strings,
             handles: Bits::at(objects, handle_start, end),
             crc_ok,
+            ver,
         })
     }
 
-    /// Next TV string (TU from the string stream). Missing string stream gives "".
-    pub fn tv(&mut self) -> Result<String> {
-        match self.strings.as_mut() {
-            Some(s) => s.tu(),
-            None => Ok(String::new()),
+    /// R2000 (spec 20.1): MS size, BS type, RL size of the data in bits, handle; strings inline.
+    fn parse_r2000(objects: &'a [u8], offset: usize) -> Result<Self> {
+        let mut r = Bits::at(objects, offset * 8, objects.len() * 8);
+        let size = r.ms()? as usize;
+        let start = r.pos;
+        let end = start + size * 8;
+        let crc_at = end / 8;
+        let stored = objects
+            .get(crc_at..crc_at + 2)
+            .map(|s| u16::from_le_bytes([s[0], s[1]]))
+            .ok_or_else(|| Error(format!("object at {offset:#x}: size {size} past end of file")))?;
+        let crc_ok = crc8(0xC0C1, &objects[offset..crc_at]) == stored;
+        r.end = end;
+        let type_code = r.bs()? as u16;
+        let data_bits = r.rl()? as usize;
+        let handle_start = start + data_bits;
+        if handle_start > end || handle_start < r.pos {
+            return err(format!("object at {offset:#x}: data size {data_bits} bits does not fit"));
         }
+        r.end = handle_start;
+        let handle = r.h()?.value;
+        loop {
+            let n = r.bs()? as u16 as usize;
+            if n == 0 {
+                break;
+            }
+            r.h()?; // EED app handle
+            r.skip_bytes(n)?;
+        }
+        Ok(Frame {
+            type_code,
+            handle,
+            main: r,
+            strings: None,
+            handles: Bits::at(objects, handle_start, end),
+            crc_ok,
+            ver: Version::R2000,
+        })
+    }
+
+    /// Next TV string: from the string stream (R2007+) or inline in the data stream (R2000).
+    pub fn tv(&mut self) -> Result<String> {
+        tv(&mut self.main, self.strings.as_mut(), self.ver)
     }
 
     /// Next handle from the handle stream, resolved to an absolute handle.
@@ -102,6 +144,16 @@ impl<'a> Frame<'a> {
     }
 }
 
+/// Next TV string for prescriptions that hold the data stream `r` and the string stream `s` apart.
+/// R2010+ without a string stream: every string is empty.
+pub fn tv(r: &mut Bits, s: Option<&mut Bits>, ver: Version) -> Result<String> {
+    match s {
+        Some(s) => s.tu(),
+        None if ver == Version::R2000 => r.tv8(),
+        None => Ok(String::new()),
+    }
+}
+
 /// Common data of a non-entity object (after EED).
 pub struct ObjCommon {
     pub num_reactors: u32,
@@ -110,8 +162,10 @@ pub struct ObjCommon {
 
 pub fn obj_common(f: &mut Frame) -> Result<ObjCommon> {
     let num_reactors = f.main.bl()? as u32;
-    let has_xdic = !f.main.b()?;
-    f.main.b()?; // R2013+: has DS binary data
+    let has_xdic = f.ver == Version::R2000 || !f.main.b()?; // R2004+: "xdic missing" bit
+    if f.ver >= Version::R2013 {
+        f.main.b()?; // has DS binary data
+    }
     Ok(ObjCommon { num_reactors, has_xdic })
 }
 
@@ -149,27 +203,45 @@ pub struct EntCommon {
     pub invisible: bool,
     pub lineweight: u8,
     pub linetype_scale: f64,
+    /// R2000: previous/next entity handles are stored (the "nolinks" bit was 0).
+    links: bool,
 }
 
-/// Common entity data (spec 20.4.1, R2010+ fields).
+/// Common entity data (spec 20.4.1).
 pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
+    let ver = f.ver;
     let r = &mut f.main;
     if r.b()? {
-        let n = r.bll()? as usize;
-        r.skip_bytes(n)?; // proxy graphics
+        // proxy graphics
+        let n = if ver == Version::R2000 { r.rl()? as usize } else { r.bll()? as usize };
+        r.skip_bytes(n)?;
     }
     let entmode = r.bb()?;
     let num_reactors = r.bl()? as u32;
-    let has_xdic = !r.b()?;
-    r.b()?; // R2013+: has DS binary data
-    // No "nolinks" bit here: the spec lists it, but AC1032 data does not have it (checked by hand).
-    let (color, color_has_handle) = enc_color(r)?;
+    let mut links = false;
+    let (has_xdic, color, color_has_handle);
+    if ver == Version::R2000 {
+        has_xdic = true;
+        links = !r.b()?; // nolinks
+        color = cmc_color(r.bs()?);
+        color_has_handle = false;
+    } else {
+        has_xdic = !r.b()?;
+        if ver >= Version::R2013 {
+            r.b()?; // has DS binary data
+        }
+        // No "nolinks" bit here: the spec lists it, but AC1032 data does not have it (checked by hand).
+        (color, color_has_handle) = enc_color(r)?;
+    }
     let linetype_scale = r.bd()?;
     let ltype_flags = r.bb()?;
     let plotstyle_flags = r.bb()?;
-    let material_flags = r.bb()?;
-    r.rc()?; // shadow flags
-    let visual_styles = (r.b()? as u8) + (r.b()? as u8) + (r.b()? as u8);
+    let (mut material_flags, mut visual_styles) = (0, 0);
+    if ver >= Version::R2010 {
+        material_flags = r.bb()?;
+        r.rc()?; // shadow flags
+        visual_styles = (r.b()? as u8) + (r.b()? as u8) + (r.b()? as u8);
+    }
     let invisible = r.bs()? & 1 != 0;
     let lineweight = r.rc()?;
     Ok(EntCommon {
@@ -185,7 +257,17 @@ pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
         invisible,
         lineweight,
         linetype_scale,
+        links,
     })
+}
+
+/// CMC color index (R2000 and table entries): 0 BYBLOCK, 256 BYLAYER.
+pub fn cmc_color(v: i16) -> Color {
+    match v {
+        0 => Color::ByBlock,
+        1..=255 => Color::Index(v as u8),
+        _ => Color::ByLayer,
+    }
 }
 
 fn enc_color(r: &mut Bits) -> Result<(Color, bool)> {
@@ -208,6 +290,8 @@ fn enc_color(r: &mut Bits) -> Result<(Color, bool)> {
 pub struct EntHandles {
     pub owner: Option<u64>,
     pub layer: u64,
+    /// R2000 only: next entity in the owner's chain (0 = none).
+    pub next: u64,
 }
 
 /// Common entity handle data (spec 20.4.2, R2010+).
@@ -218,6 +302,15 @@ pub fn ent_common_handles(f: &mut Frame, c: &EntCommon) -> Result<EntHandles> {
     }
     if c.has_xdic {
         f.href()?;
+    }
+    let mut next = 0;
+    if f.ver == Version::R2000 {
+        // Without links the chain is implied: previous = handle - 1, next = handle + 1.
+        next = f.handle + 1;
+        if c.links {
+            f.href()?; // previous
+            next = f.href()?;
+        }
     }
     if c.color_has_handle {
         f.href()?;
@@ -235,5 +328,5 @@ pub fn ent_common_handles(f: &mut Frame, c: &EntCommon) -> Result<EntHandles> {
     for _ in 0..c.visual_styles {
         f.href()?;
     }
-    Ok(EntHandles { owner, layer })
+    Ok(EntHandles { owner, layer, next })
 }

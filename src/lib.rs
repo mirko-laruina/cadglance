@@ -1,4 +1,4 @@
-//! Reader for DWG R2010+ files (AC1024, AC1027, AC1032), 2D subset.
+//! Reader for DWG files: R2000 (AC1015) and R2010+ (AC1024, AC1027, AC1032), 2D subset.
 //! Based only on the Open Design Alliance "Open Design Specification for .dwg files".
 
 pub mod bits;
