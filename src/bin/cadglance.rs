@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
+use cadglance::container::Version;
 use cadglance::desktop::{GpuScene, LayerLook, Look, Target, TextBox, View, load_font};
 use cadglance::drawing::Drawing;
 use cadglance::entities::P2;
@@ -429,15 +430,7 @@ fn hline(ui: &mut Ui, p: &Pal) {
 /// Two-column table like the web viewer's: muted keys, right-aligned values, row separators.
 /// Release year of a file format, from its version string.
 fn format_year(v: &str) -> &'static str {
-    match v {
-        "AC1015" => "2000",
-        "AC1018" => "2004",
-        "AC1021" => "2007",
-        "AC1024" => "2010",
-        "AC1027" => "2013",
-        "AC1032" => "2018",
-        _ => "unknown",
-    }
+    Version::from_magic(v).map_or("unknown", Version::year)
 }
 
 fn kv_table(ui: &mut Ui, p: &Pal, rows: &[(String, String)]) {

@@ -36,6 +36,36 @@ pub enum Version {
     R2018,
 }
 
+/// Version, its string at the start of the file, release year of the format.
+const VERSIONS: [(Version, &str, &str); 6] = [
+    (Version::R2000, "AC1015", "2000"),
+    (Version::R2004, "AC1018", "2004"),
+    (Version::R2007, "AC1021", "2007"),
+    (Version::R2010, "AC1024", "2010"),
+    (Version::R2013, "AC1027", "2013"),
+    (Version::R2018, "AC1032", "2018"),
+];
+
+impl Version {
+    fn row(self) -> &'static (Version, &'static str, &'static str) {
+        VERSIONS.iter().find(|r| r.0 == self).expect("every version is in VERSIONS")
+    }
+
+    /// Version string at the start of the file.
+    pub fn magic(self) -> &'static str {
+        self.row().1
+    }
+
+    /// Release year of the file format.
+    pub fn year(self) -> &'static str {
+        self.row().2
+    }
+
+    pub fn from_magic(magic: &str) -> Option<Version> {
+        VERSIONS.iter().find(|r| r.1 == magic).map(|r| r.0)
+    }
+}
+
 const R2000_HEADER_SENTINEL: [u8; 16] =
     [0x95, 0xA0, 0x4E, 0x28, 0x99, 0x82, 0x1A, 0xE5, 0x5E, 0x41, 0xE0, 0x5F, 0x9D, 0x3A, 0x4D, 0x00];
 
@@ -77,12 +107,17 @@ pub struct Container<'a> {
     pub version: String,
     pub maint_version: u8,
     pub ver: Version,
-    pub sections: Vec<SectionInfo>,
-    page_addr: HashMap<i32, usize>,
-    /// R2000 only: section name -> (file offset, size) from the section locators.
-    plain: HashMap<String, (usize, usize)>,
-    /// R2007 only: sections from the section map.
-    sections21: Vec<Section21>,
+    layout: Layout,
+}
+
+/// How the sections are stored, by version.
+enum Layout {
+    /// R2000: section name -> (file offset, size) from the section locators.
+    Plain(HashMap<String, (usize, usize)>),
+    /// R2004, R2010+: sections from the section map, page number -> file offset from the page map.
+    Paged { sections: Vec<SectionInfo>, page_addr: HashMap<i32, usize> },
+    /// R2007: sections from the section map.
+    R21(Vec<Section21>),
 }
 
 /// R2007 data section (spec 5.2): pages are RS encoded (255, 251) and optionally compressed.
@@ -102,123 +137,48 @@ impl<'a> Container<'a> {
             return err("file too small");
         }
         let version = String::from_utf8_lossy(&raw[..6]).into_owned();
-        let ver = match version.as_str() {
-            "AC1015" => Version::R2000,
-            "AC1018" => Version::R2004,
-            "AC1021" => Version::R2007,
-            "AC1024" => Version::R2010,
-            "AC1027" => Version::R2013,
-            "AC1032" => Version::R2018,
-            _ => return err(format!("unsupported version {version} (supported: AC1015, AC1018, AC1021, AC1024, AC1027, AC1032)")),
-        };
+        let ver = Version::from_magic(&version).ok_or_else(|| {
+            let known: Vec<_> = VERSIONS.iter().map(|r| r.1).collect();
+            Error(format!("unsupported version {version} (supported: {})", known.join(", ")))
+        })?;
         let maint_version = raw[0x0B];
-        if ver == Version::R2000 {
-            let plain = r2000_locators(raw)?;
-            return Ok(Container {
-                raw,
-                version,
-                maint_version,
-                ver,
-                sections: Vec::new(),
-                page_addr: HashMap::new(),
-                plain,
-                sections21: Vec::new(),
-            });
-        }
-        if ver == Version::R2007 {
-            let sections21 = r2007_sections(raw)?;
-            return Ok(Container {
-                raw,
-                version,
-                maint_version,
-                ver,
-                sections: Vec::new(),
-                page_addr: HashMap::new(),
-                plain: HashMap::new(),
-                sections21,
-            });
-        }
-
-        let mut hdr = [0u8; 0x6C];
-        hdr.copy_from_slice(&raw[0x80..0x80 + 0x6C]);
-        let mut seed: u32 = 1;
-        for b in hdr.iter_mut() {
-            seed = seed.wrapping_mul(0x343FD).wrapping_add(0x269EC3);
-            *b ^= (seed >> 16) as u8;
-        }
-        if &hdr[..11] != b"AcFssFcAJMB" {
-            return err("bad R2004 file header signature");
-        }
-        let page_map_addr = u64le(&hdr, 0x54)? as usize + 0x100;
-        let section_map_id = i32le(&hdr, 0x5C)?;
-
-        let page_map = system_page(raw, page_map_addr, PAGE_MAP_TYPE)?;
-        let mut page_addr = HashMap::new();
-        let (mut addr, mut o) = (0x100usize, 0usize);
-        while o + 8 <= page_map.len() {
-            let (num, size) = (i32le(&page_map, o)?, i32le(&page_map, o + 4)?);
-            o += 8;
-            if num < 0 {
-                o += 16; // gap entry: parent, left, right, 0
-            } else {
-                page_addr.insert(num, addr);
-            }
-            addr += size as usize;
-        }
-
-        let sm_addr = *page_addr
-            .get(&section_map_id)
-            .ok_or_else(|| Error("section map page not in page map".into()))?;
-        let sm = system_page(raw, sm_addr, SECTION_MAP_TYPE)?;
-        let ndesc = i32le(&sm, 0)?;
-        let mut o = 20;
-        let mut sections = Vec::new();
-        for _ in 0..ndesc {
-            let size = u64le(&sm, o)?;
-            let npages = i32le(&sm, o + 8)? as usize;
-            let max_page_size = u32le(&sm, o + 12)? as u64;
-            let compressed = i32le(&sm, o + 20)? == 2;
-            let encrypted = i32le(&sm, o + 28)? != 0;
-            let name_bytes = sm
-                .get(o + 32..o + 96)
-                .ok_or_else(|| Error("section map truncated".into()))?;
-            let name = name_bytes.iter().take_while(|&&c| c != 0).map(|&c| c as char).collect();
-            o += 96;
-            let mut pages = Vec::with_capacity(npages);
-            for k in 0..npages {
-                pages.push((i32le(&sm, o + 16 * k)?, u64le(&sm, o + 16 * k + 8)?));
-            }
-            o += 16 * npages;
-            sections.push(SectionInfo { name, size, max_page_size, compressed, encrypted, pages });
-        }
-
-        Ok(Container { raw, version, maint_version, ver, sections, page_addr, plain: HashMap::new(), sections21: Vec::new() })
+        let layout = match ver {
+            Version::R2000 => Layout::Plain(r2000_locators(raw)?),
+            Version::R2007 => Layout::R21(r2007_sections(raw)?),
+            _ => paged_layout(raw)?,
+        };
+        Ok(Container { raw, version, maint_version, ver, layout })
     }
 
     pub fn section_info(&self, name: &str) -> Option<&SectionInfo> {
-        self.sections.iter().find(|s| s.name == name)
+        match &self.layout {
+            Layout::Paged { sections, .. } => sections.iter().find(|s| s.name == name),
+            _ => None,
+        }
     }
 
     /// Decompress a whole logical section. Pages are decompressed on `threads` threads.
     /// R2000: "AcDb:AcDbObjects" is the whole file, because object map offsets are file offsets.
     pub fn section(&self, name: &str, threads: usize) -> Result<Vec<u8>> {
-        if self.ver == Version::R2007 {
-            return self.section21(name, threads);
-        }
-        if self.ver == Version::R2000 {
-            if name == "AcDb:AcDbObjects" {
-                // shortcut: copies the whole file; switch to a borrowed slice if memory matters on big R2000 files.
-                return Ok(self.raw.to_vec());
+        let (sections, page_addr) = match &self.layout {
+            Layout::R21(sections) => return section21(self.raw, sections, name, threads),
+            Layout::Paged { sections, page_addr } => (sections, page_addr),
+            Layout::Plain(plain) => {
+                if name == "AcDb:AcDbObjects" {
+                    // shortcut: copies the whole file; switch to a borrowed slice if memory matters on big R2000 files.
+                    return Ok(self.raw.to_vec());
+                }
+                let &(at, size) = plain.get(name).ok_or_else(|| Error(format!("section {name} not found")))?;
+                return self
+                    .raw
+                    .get(at..at + size)
+                    .map(<[u8]>::to_vec)
+                    .ok_or_else(|| Error(format!("section {name} past end of file")));
             }
-            let &(at, size) = self.plain.get(name).ok_or_else(|| Error(format!("section {name} not found")))?;
-            return self
-                .raw
-                .get(at..at + size)
-                .map(<[u8]>::to_vec)
-                .ok_or_else(|| Error(format!("section {name} past end of file")));
-        }
-        let info = self
-            .section_info(name)
+        };
+        let info = sections
+            .iter()
+            .find(|s| s.name == name)
             .ok_or_else(|| Error(format!("section {name} not found")))?;
         if info.encrypted {
             return err(format!("section {name} is encrypted (password protected files are not supported)"));
@@ -253,7 +213,7 @@ impl<'a> Container<'a> {
                 .map(|group| {
                     s.spawn(move || -> Result<()> {
                         for (num, dst) in group.iter_mut() {
-                            self.data_page(*num, compressed, dst)?;
+                            self.data_page(page_addr, *num, compressed, dst)?;
                         }
                         Ok(())
                     })
@@ -269,9 +229,8 @@ impl<'a> Container<'a> {
         Ok(out)
     }
 
-    fn data_page(&self, num: i32, compressed: bool, dst: &mut [u8]) -> Result<()> {
-        let a = *self
-            .page_addr
+    fn data_page(&self, page_addr: &HashMap<i32, usize>, num: i32, compressed: bool, dst: &mut [u8]) -> Result<()> {
+        let a = *page_addr
             .get(&num)
             .ok_or_else(|| Error(format!("data page {num} not in page map")))?;
         let mut h = [0u32; 8];
@@ -296,38 +255,93 @@ impl<'a> Container<'a> {
     }
 }
 
-impl Container<'_> {
-    fn section21(&self, name: &str, threads: usize) -> Result<Vec<u8>> {
-        let s = self
-            .sections21
-            .iter()
-            .find(|s| s.name == name)
-            .ok_or_else(|| Error(format!("section {name} not found")))?;
-        if s.encrypted {
-            return err(format!("section {name} is encrypted (password protected files are not supported)"));
-        }
-        let raw = self.raw;
-        let decode = |&(_, at, comp, uncomp): &(u64, usize, usize, usize)| -> Result<Vec<u8>> {
-            let blocks = (comp.div_ceil(8) * 8).div_ceil(251);
-            let src = raw.get(at..).ok_or_else(|| Error(format!("section {name}: page past end of file")))?;
-            let data = rs_data(src, blocks, 251, s.interleaved)?;
-            if comp < uncomp { decompress21(&data[..comp], uncomp) } else { Ok(data[..uncomp.min(data.len())].to_vec()) }
-        };
-        let threads = threads.max(1).min(s.pages.len().max(1));
-        let chunk = s.pages.len().div_ceil(threads).max(1);
-        let parts: Vec<Result<Vec<Vec<u8>>>> = std::thread::scope(|sc| {
-            let hs: Vec<_> = s.pages.chunks(chunk).map(|g| sc.spawn(move || g.iter().map(decode).collect())).collect();
-            hs.into_iter().map(|h| h.join().unwrap_or_else(|_| err("decompression thread panicked"))).collect()
-        });
-        // Pages of zeros are not stored: a gap between page offsets stays zero.
-        let mut out = vec![0u8; s.size as usize];
-        for (page, data) in s.pages.iter().zip(parts.into_iter().collect::<Result<Vec<_>>>()?.into_iter().flatten()) {
-            let start = page.0 as usize;
-            let n = data.len().min(out.len().saturating_sub(start));
-            out[start..start + n].copy_from_slice(&data[..n]);
-        }
-        Ok(out)
+/// R2004+ file header (encrypted), page map and section map (spec 4.1-4.5).
+fn paged_layout(raw: &[u8]) -> Result<Layout> {
+    let mut hdr = [0u8; 0x6C];
+    hdr.copy_from_slice(&raw[0x80..0x80 + 0x6C]);
+    let mut seed: u32 = 1;
+    for b in hdr.iter_mut() {
+        seed = seed.wrapping_mul(0x343FD).wrapping_add(0x269EC3);
+        *b ^= (seed >> 16) as u8;
     }
+    if &hdr[..11] != b"AcFssFcAJMB" {
+        return err("bad R2004 file header signature");
+    }
+    let page_map_addr = u64le(&hdr, 0x54)? as usize + 0x100;
+    let section_map_id = i32le(&hdr, 0x5C)?;
+
+    let page_map = system_page(raw, page_map_addr, PAGE_MAP_TYPE)?;
+    let mut page_addr = HashMap::new();
+    let (mut addr, mut o) = (0x100usize, 0usize);
+    while o + 8 <= page_map.len() {
+        let (num, size) = (i32le(&page_map, o)?, i32le(&page_map, o + 4)?);
+        o += 8;
+        if num < 0 {
+            o += 16; // gap entry: parent, left, right, 0
+        } else {
+            page_addr.insert(num, addr);
+        }
+        addr += size as usize;
+    }
+
+    let sm_addr = *page_addr
+        .get(&section_map_id)
+        .ok_or_else(|| Error("section map page not in page map".into()))?;
+    let sm = system_page(raw, sm_addr, SECTION_MAP_TYPE)?;
+    let ndesc = i32le(&sm, 0)?;
+    let mut o = 20;
+    let mut sections = Vec::new();
+    for _ in 0..ndesc {
+        let size = u64le(&sm, o)?;
+        let npages = i32le(&sm, o + 8)? as usize;
+        let max_page_size = u32le(&sm, o + 12)? as u64;
+        let compressed = i32le(&sm, o + 20)? == 2;
+        let encrypted = i32le(&sm, o + 28)? != 0;
+        let name_bytes = sm
+            .get(o + 32..o + 96)
+            .ok_or_else(|| Error("section map truncated".into()))?;
+        let name = name_bytes.iter().take_while(|&&c| c != 0).map(|&c| c as char).collect();
+        o += 96;
+        let mut pages = Vec::with_capacity(npages);
+        for k in 0..npages {
+            pages.push((i32le(&sm, o + 16 * k)?, u64le(&sm, o + 16 * k + 8)?));
+        }
+        o += 16 * npages;
+        sections.push(SectionInfo { name, size, max_page_size, compressed, encrypted, pages });
+    }
+
+    Ok(Layout::Paged { sections, page_addr })
+}
+
+/// Decompress a whole R2007 section. Pages are decoded on `threads` threads.
+fn section21(raw: &[u8], sections: &[Section21], name: &str, threads: usize) -> Result<Vec<u8>> {
+    let s = sections
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| Error(format!("section {name} not found")))?;
+    if s.encrypted {
+        return err(format!("section {name} is encrypted (password protected files are not supported)"));
+    }
+    let decode = |&(_, at, comp, uncomp): &(u64, usize, usize, usize)| -> Result<Vec<u8>> {
+        let blocks = (comp.div_ceil(8) * 8).div_ceil(251);
+        let src = raw.get(at..).ok_or_else(|| Error(format!("section {name}: page past end of file")))?;
+        let data = rs_data(src, blocks, 251, s.interleaved)?;
+        if comp < uncomp { decompress21(&data[..comp], uncomp) } else { Ok(data[..uncomp.min(data.len())].to_vec()) }
+    };
+    let threads = threads.max(1).min(s.pages.len().max(1));
+    let chunk = s.pages.len().div_ceil(threads).max(1);
+    let parts: Vec<Result<Vec<Vec<u8>>>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = s.pages.chunks(chunk).map(|g| sc.spawn(move || g.iter().map(decode).collect())).collect();
+        hs.into_iter().map(|h| h.join().unwrap_or_else(|_| err("decompression thread panicked"))).collect()
+    });
+    // Pages of zeros are not stored: a gap between page offsets stays zero.
+    let mut out = vec![0u8; s.size as usize];
+    for (page, data) in s.pages.iter().zip(parts.into_iter().collect::<Result<Vec<_>>>()?.into_iter().flatten()) {
+        let start = page.0 as usize;
+        let n = data.len().min(out.len().saturating_sub(start));
+        out[start..start + n].copy_from_slice(&data[..n]);
+    }
+    Ok(out)
 }
 
 /// R2007 system page (spec 5.3): `comp` bytes repeated `factor` times, RS (255, 239) interleaved.
