@@ -2,6 +2,7 @@
 
 use crate::bits::Bits;
 use crate::container::{Error, Result, Version, err};
+use crate::objects::tv;
 
 const SENTINEL: [u8; 16] =
     [0x8D, 0xA1, 0xC4, 0xB8, 0xC4, 0xA9, 0xF8, 0xC5, 0xC0, 0xDC, 0xF4, 0x5F, 0xE7, 0xCF, 0xB6, 0x8A];
@@ -25,11 +26,15 @@ pub fn parse_classes(data: &[u8], ver: Version) -> Result<Vec<Class>> {
             .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
             .ok_or_else(|| Error("classes: truncated".into()))
     };
-    if ver == Version::R2000 {
-        return parse_r2000(data, rl(16)? as usize);
-    }
-    if ver == Version::R2004 {
-        return parse_r2004(data, rl(16)? as usize);
+    if ver <= Version::R2004 {
+        // Spec 10.1/10.2: RL size in bytes, then the bit data at byte 20 with inline TV strings.
+        let end = (20 + rl(16)? as usize) * 8;
+        if end > data.len() * 8 {
+            return err("classes: size past end of section");
+        }
+        let mut r = Bits::at(data, 20 * 8, end);
+        // Up to 7 padding bits can follow the last class.
+        return read_classes(&mut r, None, ver, 8);
     }
     // R2007 has no size-high RL: the bit-size field is at byte 20 instead of 24.
     let bits_at = if ver == Version::R2007 { 20 } else { 24 };
@@ -59,73 +64,31 @@ pub fn parse_classes(data: &[u8], ver: Version) -> Result<Vec<Class>> {
     let mut strings = strings.ok_or_else(|| Error("classes: no string stream".into()))?;
 
     let mut r = Bits::at(data, (bits_at + 4) * 8, main_end);
-    r.bs()?; // maximum class number
-    r.rc()?;
-    r.rc()?;
-    r.b()?;
-    let mut out = Vec::new();
-    while r.end - r.pos > 8 {
-        let number = r.bs()? as u16;
-        r.bs()?; // proxy flags
-        let _app = strings.tu()?;
-        let cpp_name = strings.tu()?;
-        let dxf_name = strings.tu()?;
-        r.b()?; // was a zombie
-        let item_class = r.bs()? as u16;
-        r.bl()?; // instance count
-        r.bl()?; // dwg version
-        r.bl()?; // maintenance version
-        r.bl()?;
-        r.bl()?;
-        out.push(Class { number, dxf_name, cpp_name, is_entity: item_class == 0x1F2 });
-    }
-    Ok(out)
+    read_classes(&mut r, Some(&mut strings), ver, 9)
 }
 
-/// R2000 (spec 10.1): SN, RL size in bytes, then classes with inline TV strings until the data ends.
-fn parse_r2000(data: &[u8], size: usize) -> Result<Vec<Class>> {
-    let end = (20 + size) * 8;
-    if end > data.len() * 8 {
-        return err("classes: size past end of section");
+/// Class records after the section header. R2004+ starts with a preamble and stores 5 BL counters
+/// per class. Strings come from `strings` (R2007+) or inline. Stops when fewer than `min_left` bits remain.
+fn read_classes(r: &mut Bits, mut strings: Option<&mut Bits>, ver: Version, min_left: usize) -> Result<Vec<Class>> {
+    if ver >= Version::R2004 {
+        r.bs()?; // maximum class number
+        r.rc()?;
+        r.rc()?;
+        r.b()?;
     }
-    let mut r = Bits::at(data, 20 * 8, end);
     let mut out = Vec::new();
-    // Up to 7 padding bits can follow the last class.
-    while r.end - r.pos >= 8 {
+    while r.end - r.pos >= min_left {
         let number = r.bs()? as u16;
         r.bs()?; // version / proxy flags
-        let _app = r.tv8()?;
-        let cpp_name = r.tv8()?;
-        let dxf_name = r.tv8()?;
+        let _app = tv(r, strings.as_deref_mut(), ver)?;
+        let cpp_name = tv(r, strings.as_deref_mut(), ver)?;
+        let dxf_name = tv(r, strings.as_deref_mut(), ver)?;
         r.b()?; // was a zombie
         let item_class = r.bs()? as u16;
-        out.push(Class { number, dxf_name, cpp_name, is_entity: item_class == 0x1F2 });
-    }
-    Ok(out)
-}
-
-/// R2004 (spec 10.2): like R2000 after a small preamble, with 5 BL counters per class.
-fn parse_r2004(data: &[u8], size: usize) -> Result<Vec<Class>> {
-    let end = (20 + size) * 8;
-    if end > data.len() * 8 {
-        return err("classes: size past end of section");
-    }
-    let mut r = Bits::at(data, 20 * 8, end);
-    r.bs()?; // maximum class number
-    r.rc()?;
-    r.rc()?;
-    r.b()?;
-    let mut out = Vec::new();
-    while r.end - r.pos >= 8 {
-        let number = r.bs()? as u16;
-        r.bs()?; // proxy flags
-        let _app = r.tv8()?;
-        let cpp_name = r.tv8()?;
-        let dxf_name = r.tv8()?;
-        r.b()?; // was a zombie
-        let item_class = r.bs()? as u16;
-        for _ in 0..5 {
-            r.bl()?; // instance count, dwg version, maintenance version, 2 unknown
+        if ver >= Version::R2004 {
+            for _ in 0..5 {
+                r.bl()?; // instance count, dwg version, maintenance version, 2 unknown
+            }
         }
         out.push(Class { number, dxf_name, cpp_name, is_entity: item_class == 0x1F2 });
     }
