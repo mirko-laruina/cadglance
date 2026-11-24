@@ -78,10 +78,14 @@
     font-variant-numeric: tabular-nums; }
   .list li span { flex: 1; }
 
-  #status { position: fixed; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center;
+  #status { position: fixed; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: stretch;
     pointer-events: none; }
   #status > * { pointer-events: auto; }
-  #coords, #hint { padding: 5px 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #coords, #hint { padding: 4px 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #coords { gap: 6px; }
+  #coords .k { color: var(--muted); }
+  #coords .k:not(:first-child) { margin-left: 8px; }
+  #coords .v { display: inline-block; text-align: right; }
   #hint { color: var(--muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 
   #help { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); }
@@ -182,8 +186,8 @@
 </aside>
 
 <div id="status">
-  <div class="group" id="coords" title="Cursor coordinates (model space)">X —   Y —</div>
   <div class="group"><button class="btn" id="bSnap" aria-pressed="true" title="Snap to endpoints and midpoints (S)"><svg><use href="#i-snap"/></svg><span class="label">Snap</span></button></div>
+  <div class="group" id="coords" title="Cursor coordinates (model space)"><span class="k">X</span><span class="v" id="cX">—</span><span class="k">Y</span><span class="v" id="cY">—</span><span class="k">1 px =</span><span class="v" id="cS">—</span></div>
   <div class="group" id="hint" aria-live="polite"></div>
 </div>
 
@@ -975,7 +979,13 @@ function updateStatus() {
   const d = Math.max(0, Math.min(4, Math.ceil(Math.log10(view.ppu)) + 1));
   const unitsPerPx = dpr() / view.ppu;
   const pos = cursorWorld ? absP(cursorWorld) : null;
-  $("coords").textContent = pos ? `X ${fmt(pos[0], d)}   Y ${fmt(pos[1], d)}   ·   1 px = ${fmt(unitsPerPx, unitsPerPx < 1 ? 3 : 1)}` : "X —   Y —";
+  // Fixed minimum widths, right-aligned, so values do not shift the layout when the cursor moves.
+  const cw = `${11 + (d > 0 ? d + 1 : 0)}ch`; // "-99,999,999" + decimals
+  $("cX").style.minWidth = $("cY").style.minWidth = cw;
+  $("cS").style.minWidth = "9ch";
+  $("cX").textContent = pos ? fmt(pos[0], d) : "—";
+  $("cY").textContent = pos ? fmt(pos[1], d) : "—";
+  $("cS").textContent = fmt(unitsPerPx, unitsPerPx < 1 ? 3 : 1);
 }
 
 // ---------- properties panel ----------

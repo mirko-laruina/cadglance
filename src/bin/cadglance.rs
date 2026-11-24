@@ -1578,41 +1578,61 @@ impl App {
         // overlaps. Redraw time and graphics card are in the help dialog (File and drawing).
         let left = egui::Area::new(egui::Id::new("status")).anchor(Align2::LEFT_BOTTOM, vec2(12.0, -12.0)).movable(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if let Some(d) = &self.doc {
-                    p.group().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                        let txt = match d.hover.map(|h| h.0) {
-                            Some(w) => {
-                                let o = d.scene.origin;
-                                let dec = (d.view.ppu.log10().ceil() as i32 + 1).clamp(0, 4) as usize;
-                                let px = ctx.pixels_per_point() as f64 / d.view.ppu;
-                                format!("X {}   Y {}   ·   1 px = {}", fmt(w[0] + o[0], dec), fmt(w[1] + o[1], dec), fmt(px, if px < 1.0 { 3 } else { 1 }))
-                            }
-                            None => "X —   Y —".into(),
-                        };
-                        ui.label(RichText::new(txt).monospace().color(p.fg));
-                    });
-                }
                 p.group().show(ui, |ui| {
                     if tool_button(ui, p, Some(Icon::Snap), Some("Snap"), self.settings.snap, "Snap to endpoints and midpoints (S)").clicked() {
                         self.settings.snap = !self.settings.snap;
                         self.settings.save();
                     }
                 });
+                if let Some(d) = &self.doc {
+                    // Fixed-width, right-aligned fields (at least `chars` monospace cells), so values do not
+                    // shift the layout when the cursor moves.
+                    let font = FontId::monospace(13.0);
+                    let cw = ctx.fonts_mut(|f| f.layout_no_wrap("0".into(), font.clone(), p.fg)).size().x;
+                    let field = |ui: &mut Ui, text: String, chars: usize, color: Color32| {
+                        let g = ui.painter().layout_no_wrap(text, font.clone(), color);
+                        let (r, _) = ui.allocate_exact_size(vec2(g.size().x.max(cw * chars as f32), 28.0), Sense::hover());
+                        ui.painter().galley(pos2(r.right() - g.size().x, r.center().y - g.size().y / 2.0), g, color);
+                    };
+                    let dec = (d.view.ppu.log10().ceil() as i32 + 1).clamp(0, 4) as usize;
+                    let px = ctx.pixels_per_point() as f64 / d.view.ppu;
+                    let o = d.scene.origin;
+                    let (x, y) = match d.hover.map(|h| h.0) {
+                        Some(w) => (fmt(w[0] + o[0], dec), fmt(w[1] + o[1], dec)),
+                        None => ("—".into(), "—".into()),
+                    };
+                    let coord_chars = 11 + if dec > 0 { dec + 1 } else { 0 }; // "-99,999,999" + decimals
+                    p.group().inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        field(ui, "X".into(), 0, p.muted);
+                        field(ui, x, coord_chars, p.fg);
+                        ui.add_space(8.0);
+                        field(ui, "Y".into(), 0, p.muted);
+                        field(ui, y, coord_chars, p.fg);
+                        ui.add_space(8.0);
+                        field(ui, "1 px =".into(), 0, p.muted);
+                        field(ui, fmt(px, if px < 1.0 { 3 } else { 1 }), 9, p.fg);
+                    }));
+                }
             });
         });
         self.status_top = left.response.rect.top();
         let hint = self.tool.hint();
         let galley = ctx.fonts_mut(|f| f.layout_no_wrap(hint.to_string(), FontId::proportional(13.0), p.muted));
-        let x = left.response.rect.right() + 6.0;
-        let fits = x + galley.size().x + 20.0 + 6.0 <= ctx.content_rect().right() - 12.0;
+        let x = left.response.rect.right() + ctx.style().spacing.item_spacing.x;
+        let fits = x + galley.size().x + 20.0 + 2.0 <= ctx.content_rect().right() - 12.0;
         if fits {
+            // Same frame and row height as the groups on the left, top-aligned with them.
             egui::Area::new(egui::Id::new("status-hint"))
-                .fixed_pos(pos2(x, left.response.rect.bottom() - (galley.size().y + 12.0)))
+                .fixed_pos(pos2(x, left.response.rect.top()))
                 .movable(false)
                 .interactable(false)
                 .show(ctx, |ui| {
-                    p.group().inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                        ui.label(RichText::new(hint).color(p.muted));
+                    p.group().inner_margin(egui::Margin::symmetric(10, 4)).show(ui, |ui| {
+                        ui.set_min_height(28.0);
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(hint).color(p.muted));
+                        });
                     });
                 });
         }
