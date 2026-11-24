@@ -114,7 +114,13 @@ pub fn mtext_paragraphs(s: &str) -> (String, Vec<u8>) {
             }
         }
     }
-    (clean_text(&out), aligns)
+    // Trailing empty paragraphs take no space in CAD (they would shift middle/bottom attachment).
+    let mut text = clean_text(&out);
+    while text.ends_with('\n') {
+        text.pop();
+        aligns.pop();
+    }
+    (text, aligns)
 }
 
 /// JSON string literal.
@@ -163,5 +169,11 @@ mod paragraph_tests {
     fn paragraph_alignment() {
         assert_eq!(mtext_paragraphs("\\pxqc;7"), ("7".to_string(), vec![2]));
         assert_eq!(mtext_paragraphs("a\\P\\pxqr;b\\Pc"), ("a\nb\nc".to_string(), vec![0, 3, 3]));
+    }
+
+    #[test]
+    fn trailing_paragraphs_dropped() {
+        assert_eq!(mtext_paragraphs("A\\P"), ("A".to_string(), vec![0]));
+        assert_eq!(mtext_paragraphs("A\\P\\PB\\P\\P"), ("A\n\nB".to_string(), vec![0, 0, 0]));
     }
 }
