@@ -501,6 +501,10 @@ struct Settings {
     bg: [u8; 3],
     mono: [u8; 3],
     sel: [u8; 3],
+    label_size: f32,
+    outline: bool,
+    /// None: follows `sel`.
+    outline_color: Option<[u8; 3]>,
     adapt: bool,
     texts: bool,
     fills: bool,
@@ -516,6 +520,9 @@ impl Default for Settings {
             bg: Theme::Dark.bg(),
             mono: [232, 235, 239],
             sel: [255, 176, 32],
+            label_size: 12.5,
+            outline: true,
+            outline_color: None,
             adapt: true,
             texts: true,
             fills: true,
@@ -556,6 +563,9 @@ impl Settings {
                 "bg" => s.bg = parse_hex(v).unwrap_or(s.bg),
                 "mono" => s.mono = parse_hex(v).unwrap_or(s.mono),
                 "sel" => s.sel = parse_hex(v).unwrap_or(s.sel),
+                "label_size" => s.label_size = v.parse::<f32>().map(|x| x.clamp(8.0, 32.0)).unwrap_or(s.label_size),
+                "outline" => s.outline = b,
+                "outline_color" => s.outline_color = parse_hex(v),
                 "adapt" => s.adapt = b,
                 "texts" => s.texts = b,
                 "fills" => s.fills = b,
@@ -582,6 +592,10 @@ impl Settings {
             self.snap,
             self.panel
         );
+        out.push_str(&format!("label_size={}\noutline={}\n", self.label_size, self.outline));
+        if let Some(c) = self.outline_color {
+            out.push_str(&format!("outline_color={}\n", hex(c)));
+        }
         for r in &self.recent {
             out.push_str(&format!("recent={}\n", r.display()));
         }
@@ -1456,6 +1470,7 @@ impl App {
     fn look_tab(&mut self, ui: &mut Ui, p: &Pal) {
         let before = self.settings.look();
         let texts_before = self.settings.texts;
+        let overlay_before = (self.settings.sel, self.settings.label_size, self.settings.outline, self.settings.outline_color);
         let s = &mut self.settings;
         section(ui, p, "Theme");
         egui::Grid::new("themes").num_columns(2).spacing(vec2(6.0, 6.0)).show(ui, |ui| {
@@ -1508,6 +1523,22 @@ impl App {
         field(ui, "Lines (monochrome themes)", &mut s.mono);
         field(ui, "Highlight and measurements", &mut s.sel);
         ui.horizontal(|ui| {
+            ui.label("Measurement text size");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(egui::DragValue::new(&mut s.label_size).range(8.0..=32.0).speed(0.25));
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Measurement text outline");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut c = s.outline_color.unwrap_or(s.sel);
+                if ui.add_enabled_ui(s.outline, |ui| ui.color_edit_button_srgb(&mut c).changed()).inner {
+                    s.outline_color = Some(c);
+                }
+                ui.checkbox(&mut s.outline, "");
+            });
+        });
+        ui.horizontal(|ui| {
             ui.label("Darken light colors on a light background");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.checkbox(&mut s.adapt, ""));
         });
@@ -1528,6 +1559,9 @@ impl App {
             *s = Settings { recent, ..Settings::default() };
         }
         let texts_now = s.texts;
+        if (s.sel, s.label_size, s.outline, s.outline_color) != overlay_before {
+            s.save();
+        }
         if self.settings.look() != before || texts_now != texts_before {
             self.settings.save();
             if let Some(d) = &mut self.doc {
@@ -1869,11 +1903,19 @@ impl App {
         } else {
             (Color32::from_rgba_unmultiplied(17, 20, 24, 230), Color32::from_rgb(0xe8, 0xeb, 0xef))
         };
+        let k = self.settings.label_size / 12.5;
+        let outline = self.settings.outline.then(|| {
+            let c = self.settings.outline_color.unwrap_or(self.settings.sel);
+            Stroke::new(1.5, Color32::from_rgb(c[0], c[1], c[2]))
+        });
         let label = |at: Pos2, s: String| {
-            let galley = painter.layout_no_wrap(s, FontId::proportional(12.5), ink);
-            let r = Rect::from_center_size(at, galley.size() + vec2(12.0, 6.0));
-            painter.rect_filled(r, 4.0, plate);
-            painter.galley(r.min + vec2(6.0, 3.0), galley, ink);
+            let galley = painter.layout_no_wrap(s, FontId::proportional(self.settings.label_size), ink);
+            let r = Rect::from_center_size(at, galley.size() + vec2(12.0, 6.0) * k);
+            painter.rect_filled(r, 4.0 * k, plate);
+            if let Some(o) = outline {
+                painter.rect_stroke(r, 4.0 * k, o, egui::StrokeKind::Inside);
+            }
+            painter.galley(r.min + vec2(6.0, 3.0) * k, galley, ink);
         };
         let dot = |w: P2| painter.circle_filled(xf.to_screen(w), 3.5, sel);
         let quad = |q: &[P2; 4], stroke: Stroke| {
@@ -1934,7 +1976,7 @@ impl App {
             dot(b);
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
             label(
-                pos2((sa.x + sb.x) / 2.0, (sa.y + sb.y) / 2.0 - 14.0),
+                pos2((sa.x + sb.x) / 2.0, (sa.y + sb.y) / 2.0 - 14.0 * k),
                 format!("{}   ΔX {}   ΔY {}   {}°", fmt(dx.hypot(dy), 3), fmt(dx, 3), fmt(dy, 3), fmt(dy.atan2(dx).to_degrees(), 2)),
             );
         };
