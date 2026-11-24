@@ -90,7 +90,7 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) c: vec4<f32> };
   var o: VOut;
   var eff = v.lay;
   if (v.lay == u.flags.x && v.ilay.x != 65535u) { eff = v.ilay.x; }
-  if (!layer_visible(eff) || !layer_visible(v.ilay.y)) {
+  if (!layer_visible(eff)) {
     o.p = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     o.c = vec4<f32>(0.0);
     return o;
@@ -122,7 +122,7 @@ struct VOut { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @loca
 
 @vertex fn vs(v: VIn) -> VOut {
   var o: VOut;
-  if (!layer_visible(v.lays.x) || !layer_visible(v.lays.y)) {
+  if (!layer_visible(v.lays.x)) {
     o.p = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     return o;
   }
