@@ -55,7 +55,7 @@ fn main() {
     });
     drop(raw);
     let t_load = t0.elapsed();
-    let Some(ms) = d.blocks.values().find(|b| b.name == "*Model_Space").map(|b| b.handle) else {
+    let Some(ms) = d.blocks.values().find(|b| b.name.eq_ignore_ascii_case("*Model_Space")).map(|b| b.handle) else {
         eprintln!("{path}: no *Model_Space block");
         std::process::exit(1);
     };

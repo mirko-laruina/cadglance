@@ -212,7 +212,7 @@ impl Drawing {
                                 Ok(mut f) => {
                                     let t = f.type_code;
                                     let res = parse_one(&mut f, classes);
-                                    if res.is_err() && ver == Version::R2000 && is_entity_type(classes, t) {
+                                    if res.is_err() && ver <= Version::R2000 && is_entity_type(classes, t) {
                                         // Keep the chain link of a failed entity.
                                         if let Some(next) = Frame::parse(objects, off, ver).ok().and_then(|mut f| entity_next(&mut f).ok()) {
                                             broken_next.lock().unwrap().insert(h, next);
@@ -264,7 +264,7 @@ impl Drawing {
             }
         }
         d.layouts.sort_by_key(|l| l.tab_order);
-        if c.ver == Version::R2000 {
+        if c.ver <= Version::R2000 {
             d.resolve_chains(&broken_next.into_inner().unwrap());
         }
         d.timings = Timings { read_container, decompress, index, parse, merge: t4.elapsed() };
@@ -347,18 +347,22 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
     r.b()?; // has attdefs
     let is_xref = r.b()?;
     let overlaid = r.b()?;
-    r.b()?; // loaded
+    if ver >= Version::R2000 {
+        r.b()?; // loaded
+    }
     let owned = if ver >= Version::R2004 { r.count_in(8, hbudget)? } else { 0 };
     let base = r.bd3()?;
     let base = [base[0], base[1]];
     tv(r, f.strings.as_mut(), ver)?; // xref path
     let mut inserts = 0usize;
-    while r.rc()? != 0 {
-        inserts += 1;
+    if ver >= Version::R2000 {
+        while r.rc()? != 0 {
+            inserts += 1;
+        }
+        tv(r, f.strings.as_mut(), ver)?; // description
+        let preview = r.count_in(8, r.remaining())?;
+        r.skip_bytes(preview)?;
     }
-    tv(r, f.strings.as_mut(), ver)?; // description
-    let preview = r.count_in(8, r.remaining())?;
-    r.skip_bytes(preview)?;
     if ver >= Version::R2007 {
         r.bs()?; // insert units
         r.b()?; // explodable
@@ -370,7 +374,7 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
     f.href()?; // NULL
     f.href()?; // BLOCK entity
     let mut entities = Vec::with_capacity(owned);
-    if ver == Version::R2000 {
+    if ver <= Version::R2000 {
         if !is_xref && !overlaid {
             let first = f.href()?;
             let last = f.href()?;
@@ -387,7 +391,7 @@ fn block_header(f: &mut Frame) -> Result<BlockRecord> {
     for _ in 0..inserts {
         f.href()?;
     }
-    let layout = f.href()?;
+    let layout = if ver >= Version::R2000 { f.href()? } else { 0 };
     Ok(BlockRecord { handle: f.handle, name, base, entities, layout, exact })
 }
 
@@ -409,8 +413,24 @@ fn layer(f: &mut Frame) -> Result<Layer> {
     let name = f.tv()?;
     let r = &mut f.main;
     table_entry_flags(r, f.ver)?;
+    if f.ver < Version::R2000 {
+        // R13-R14: one bit per flag, in the order of the R2000+ flag bits; on = !off.
+        let frozen = r.b()? as i16;
+        let off = !r.b()? as i16;
+        let frozen_new = r.b()? as i16;
+        let locked = r.b()? as i16;
+        let mut flags = frozen | off << 1 | frozen_new << 2 | locked << 3;
+        let index = r.bs()?;
+        if index < 0 {
+            flags |= 2; // negative index = layer off
+        }
+        if !f.data_fully_read() {
+            return Err(crate::container::Error("LAYER: data stream not fully read".into()));
+        }
+        return Ok(Layer { handle: f.handle, name, flags, color: cmc_color(index.abs()) });
+    }
     let flags = r.bs()?; // frozen 1, off 2, frozen in new vp 4, locked 8, plot 16, lineweight 0x3E0
-    if f.ver == Version::R2000 {
+    if f.ver <= Version::R2000 {
         let color = cmc_color(r.bs()?.abs()); // negative index = layer off
         if !f.data_fully_read() {
             return Err(crate::container::Error("LAYER: data stream not fully read".into()));
@@ -457,7 +477,7 @@ fn layout(f: &mut Frame) -> Result<Layout> {
     r.bs()?;
     r.bd2()?;
     r.bd2()?;
-    if ver == Version::R2000 {
+    if ver <= Version::R2000 {
         tv(r, s.as_deref_mut(), ver)?; // plot view name
     }
     r.bd()?;

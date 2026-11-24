@@ -28,6 +28,8 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
 /// File format versions this reader knows, in release order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Version {
+    R13,
+    R14,
     R2000,
     R2004,
     R2007,
@@ -37,7 +39,9 @@ pub enum Version {
 }
 
 /// Version, its string at the start of the file, release year of the format.
-const VERSIONS: [(Version, &str, &str); 6] = [
+const VERSIONS: [(Version, &str, &str); 8] = [
+    (Version::R13, "AC1012", "1994"),
+    (Version::R14, "AC1014", "1997"),
     (Version::R2000, "AC1015", "2000"),
     (Version::R2004, "AC1018", "2004"),
     (Version::R2007, "AC1021", "2007"),
@@ -143,7 +147,7 @@ impl<'a> Container<'a> {
         })?;
         let maint_version = raw[0x0B];
         let layout = match ver {
-            Version::R2000 => Layout::Plain(r2000_locators(raw)?),
+            Version::R13 | Version::R14 | Version::R2000 => Layout::Plain(r2000_locators(raw)?),
             Version::R2007 => Layout::R21(r2007_sections(raw)?),
             _ => paged_layout(raw)?,
         };

@@ -16,13 +16,15 @@ pub struct Frame<'a> {
     pub handles: Bits<'a>,
     pub crc_ok: bool,
     pub ver: Version,
+    /// Bit position after the MS size: the RL data size counts from here.
+    data_start: usize,
 }
 
 impl<'a> Frame<'a> {
     /// `objects` is the whole AcDb:AcDbObjects section, `offset` comes from the object map.
     pub fn parse(objects: &'a [u8], offset: usize, ver: Version) -> Result<Self> {
-        if ver == Version::R2000 {
-            return Self::parse_r2000(objects, offset);
+        if ver <= Version::R2000 {
+            return Self::parse_r2000(objects, offset, ver);
         }
         let mut r = Bits::at(objects, offset * 8, objects.len() * 8);
         let size = r.ms()? as usize;
@@ -94,11 +96,13 @@ impl<'a> Frame<'a> {
             handles: Bits::at(objects, handle_start, end),
             crc_ok,
             ver,
+            data_start: start,
         })
     }
 
     /// R2000 (spec 20.1): MS size, BS type, RL size of the data in bits, handle; strings inline.
-    fn parse_r2000(objects: &'a [u8], offset: usize) -> Result<Self> {
+    /// R13-R14: the RL comes later, see `read_data_size`; until then the data stream runs to the end.
+    fn parse_r2000(objects: &'a [u8], offset: usize, ver: Version) -> Result<Self> {
         let mut r = Bits::at(objects, offset * 8, objects.len() * 8);
         let size = r.ms()? as usize;
         let start = r.pos;
@@ -111,11 +115,16 @@ impl<'a> Frame<'a> {
         let crc_ok = crc8(0xC0C1, &objects[offset..crc_at]) == stored;
         r.end = end;
         let type_code = r.bs()? as u16;
-        let data_bits = r.rl()? as usize;
-        let handle_start = start + data_bits;
-        if handle_start > end || handle_start < r.pos {
-            return err(format!("object at {offset:#x}: data size {data_bits} bits does not fit"));
-        }
+        let handle_start = if ver == Version::R2000 {
+            let data_bits = r.rl()? as usize;
+            let hs = start + data_bits;
+            if hs > end || hs < r.pos {
+                return err(format!("object at {offset:#x}: data size {data_bits} bits does not fit"));
+            }
+            hs
+        } else {
+            end
+        };
         r.end = handle_start;
         let handle = r.h()?.value;
         loop {
@@ -133,8 +142,25 @@ impl<'a> Frame<'a> {
             strings: None,
             handles: Bits::at(objects, handle_start, end),
             crc_ok,
-            ver: Version::R2000,
+            ver,
+            data_start: start,
         })
+    }
+
+    /// R13-R14: RL size of the data in bits, inside the common data (spec 20.4.1). Bounds the data
+    /// stream and starts the handle stream. No-op for R2000+.
+    fn read_data_size(&mut self) -> Result<()> {
+        if self.ver >= Version::R2000 {
+            return Ok(());
+        }
+        let data_bits = self.main.rl()? as usize;
+        let hs = self.data_start + data_bits;
+        if hs > self.handles.end || hs < self.main.pos {
+            return err(format!("object {:#x}: data size {data_bits} bits does not fit", self.handle));
+        }
+        self.main.end = hs;
+        self.handles.pos = hs;
+        Ok(())
     }
 
     /// Next TV string: from the string stream (R2007+) or inline in the data stream (R2000, R2004).
@@ -174,8 +200,9 @@ pub struct ObjCommon {
 }
 
 pub fn obj_common(f: &mut Frame) -> Result<ObjCommon> {
+    f.read_data_size()?;
     let num_reactors = f.main.bl()? as u32;
-    let has_xdic = f.ver == Version::R2000 || !f.main.b()?; // R2004+: "xdic missing" bit
+    let has_xdic = f.ver <= Version::R2000 || !f.main.b()?; // R2004+: "xdic missing" bit
     if f.ver >= Version::R2013 {
         f.main.b()?; // has DS binary data
     }
@@ -218,7 +245,7 @@ pub struct EntCommon {
     pub linetype_scale: f64,
     /// Proxy graphics bytes (spec ch. 29), when the entity carries them.
     pub proxy: Option<Vec<u8>>,
-    /// R2000: previous/next entity handles are stored (the "nolinks" bit was 0).
+    /// R2000 and older: previous/next entity handles are stored (the "nolinks" bit was 0).
     links: bool,
 }
 
@@ -234,11 +261,15 @@ pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
         }
         proxy = Some((0..n).map(|_| r.rc()).collect::<Result<Vec<u8>>>()?);
     }
+    f.read_data_size()?;
+    let r = &mut f.main;
     let entmode = r.bb()?;
     let num_reactors = r.bl()? as u32;
     let mut links = false;
+    // R13-R14: "isbylayerlt" bit; the linetype handle is there when it is 0.
+    let old_ltype = ver < Version::R2000 && !r.b()?;
     let (has_xdic, color, color_has_handle);
-    if ver == Version::R2000 {
+    if ver <= Version::R2000 {
         has_xdic = true;
         links = !r.b()?; // nolinks
         color = cmc_color(r.bs()?);
@@ -252,8 +283,11 @@ pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
         (color, color_has_handle) = enc_color(r)?;
     }
     let linetype_scale = r.bd()?;
-    let ltype_flags = r.bb()?;
-    let plotstyle_flags = r.bb()?;
+    let (ltype_flags, plotstyle_flags) = if ver < Version::R2000 {
+        (if old_ltype { 3 } else { 0 }, 0)
+    } else {
+        (r.bb()?, r.bb()?)
+    };
     let (mut material_flags, mut visual_styles) = (0, 0);
     if ver >= Version::R2007 {
         material_flags = r.bb()?;
@@ -263,7 +297,7 @@ pub fn ent_common(f: &mut Frame) -> Result<EntCommon> {
         visual_styles = (r.b()? as u8) + (r.b()? as u8) + (r.b()? as u8);
     }
     let invisible = r.bs()? & 1 != 0;
-    let lineweight = r.rc()?;
+    let lineweight = if ver < Version::R2000 { 29 /* BYLAYER */ } else { r.rc()? };
     Ok(EntCommon {
         entmode,
         num_reactors,
@@ -325,7 +359,13 @@ pub fn ent_common_handles(f: &mut Frame, c: &EntCommon) -> Result<EntHandles> {
         f.href()?;
     }
     let mut next = 0;
-    if f.ver == Version::R2000 {
+    let old = f.ver < Version::R2000;
+    // R13-R14: layer and linetype come before the entity links, R2000+ after them.
+    let mut layer = 0;
+    if old {
+        layer = layer_ltype(f, c)?;
+    }
+    if f.ver <= Version::R2000 {
         // Without links the chain is implied: previous = handle - 1, next = handle + 1.
         next = f.handle + 1;
         if c.links {
@@ -336,9 +376,8 @@ pub fn ent_common_handles(f: &mut Frame, c: &EntCommon) -> Result<EntHandles> {
     if c.color_has_handle {
         f.href()?;
     }
-    let layer = f.href()?;
-    if c.ltype_flags == 3 {
-        f.href()?;
+    if !old {
+        layer = layer_ltype(f, c)?;
     }
     if c.material_flags == 3 {
         f.href()?;
@@ -350,4 +389,12 @@ pub fn ent_common_handles(f: &mut Frame, c: &EntCommon) -> Result<EntHandles> {
         f.href()?;
     }
     Ok(EntHandles { owner, layer, next })
+}
+
+fn layer_ltype(f: &mut Frame, c: &EntCommon) -> Result<u64> {
+    let layer = f.href()?;
+    if c.ltype_flags == 3 {
+        f.href()?;
+    }
+    Ok(layer)
 }

@@ -97,11 +97,11 @@ fn main() {
         }
     };
 
-    if let Some(&ms) = by_name.get("*Model_Space") {
+    if let Some((_, &ms)) = by_name.iter().find(|(n, _)| n.eq_ignore_ascii_case("*Model_Space")) {
         report("MODEL SPACE", ms, &mut memo);
     }
     for l in &d.layouts {
-        if d.blocks.get(&l.block_record).is_some_and(|b| b.name == "*Model_Space") {
+        if d.blocks.get(&l.block_record).is_some_and(|b| b.name.eq_ignore_ascii_case("*Model_Space")) {
             continue;
         }
         report(&format!("LAYOUT \"{}\" (tab {})", l.name, l.tab_order), l.block_record, &mut memo);

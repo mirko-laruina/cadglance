@@ -139,6 +139,13 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
     let r = &mut f.main;
     let mut tail_handles = TailHandles::None;
     let kind = match code {
+        19 if ver < Version::R2000 => {
+            let a = r.bd3()?;
+            let b = r.bd3()?;
+            r.bt()?;
+            r.be()?;
+            Kind::Line { a: xy(a), b: xy(b) }
+        }
         19 => {
             let z_zero = r.b()?;
             let x0 = r.rd()?;
@@ -265,9 +272,11 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
             r.bd()?;
             r.bd()?; // extents
             let value = tv(r, f.strings.as_mut(), ver)?;
-            r.bs()?;
-            r.bd()?;
-            r.b()?;
+            if ver >= Version::R2000 {
+                r.bs()?;
+                r.bd()?;
+                r.b()?;
+            }
             if ver >= Version::R2004 {
                 let bg = r.bl()?;
                 if bg & 0x11 != 0 {
@@ -306,7 +315,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
         }
         7 | 8 => {
             let insert = r.bd3()?;
-            let scale = match r.bb()? {
+            let scale = if ver < Version::R2000 { r.bd3()? } else { match r.bb()? {
                 3 => [1.0; 3],
                 1 => {
                     let y = r.dd(1.0)?;
@@ -323,7 +332,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
                     let z = r.dd(x)?;
                     [x, y, z]
                 }
-            };
+            } };
             let rotation = r.bd()?;
             let extrusion = r.bd3()?;
             let has_attribs = r.b()?;
@@ -368,7 +377,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
     let mut kind = kind;
     match (&mut kind, tail_handles) {
         (Kind::Polyline2d { vertices, .. }, TailHandles::Owned { owned }) => {
-            if ver == Version::R2000 {
+            if ver <= Version::R2000 {
                 let first = f.href()?;
                 *vertices = pending_chain(first, f.href()?);
             }
@@ -378,7 +387,7 @@ pub fn parse_entity(f: &mut Frame, kind_name: Option<&str>) -> Result<Entity> {
         }
         (Kind::Insert { block, attribs, .. }, TailHandles::Insert { owned, has_attribs }) => {
             *block = f.href()?;
-            if ver == Version::R2000 && has_attribs {
+            if ver <= Version::R2000 && has_attribs {
                 let first = f.href()?;
                 let last = f.href()?;
                 if first != 0 {
@@ -433,7 +442,7 @@ enum TailHandles {
 
 fn cmc(r: &mut Bits, s: Option<&mut Bits>, ver: Version) -> Result<()> {
     r.bs()?;
-    if ver == Version::R2000 {
+    if ver <= Version::R2000 {
         return Ok(());
     }
     r.bl()?;
@@ -450,6 +459,22 @@ fn cmc(r: &mut Bits, s: Option<&mut Bits>, ver: Version) -> Result<()> {
 }
 
 fn text(r: &mut Bits, s: Option<&mut Bits>, ver: Version) -> Result<Text> {
+    if ver < Version::R2000 {
+        r.bd()?; // elevation
+        let insert = r.rd2()?;
+        let align = r.rd2()?;
+        let extrusion = r.bd3()?;
+        r.bd()?; // thickness
+        let oblique = r.bd()?;
+        let rotation = r.bd()?;
+        let height = r.bd()?;
+        let width_factor = r.bd()?;
+        let value = tv(r, s, ver)?;
+        r.bs()?; // generation
+        let halign = r.bs()?;
+        let valign = r.bs()?;
+        return Ok(Text { insert, align, height, rotation, width_factor, oblique, halign, valign, value, extrusion, style: 0 });
+    }
     let flags = r.rc()?;
     if flags & 0x01 == 0 {
         r.rd()?; // elevation
@@ -529,7 +554,11 @@ fn lwpolyline(r: &mut Bits, ver: Version) -> Result<Kind> {
     let nids = if flag & 1024 != 0 && ver >= Version::R2010 { r.count()? } else { 0 };
     let nwidths = if flag & 32 != 0 { r.count()? } else { 0 };
     let mut pts: Vec<P2> = Vec::with_capacity(n);
-    if n > 0 {
+    if ver < Version::R2000 {
+        for _ in 0..n {
+            pts.push(r.rd2()?);
+        }
+    } else if n > 0 {
         pts.push(r.rd2()?);
         for k in 1..n {
             let prev = pts[k - 1];
@@ -563,10 +592,12 @@ fn dimension(r: &mut Bits, code: u16, s: Option<&mut Bits>, ver: Version) -> Res
         // text rotation, horizontal dir, insert scale x/y/z, insert rotation
         r.bd()?;
     }
-    r.bs()?;
-    r.bs()?;
-    r.bd()?;
-    r.bd()?;
+    if ver >= Version::R2000 {
+        r.bs()?;
+        r.bs()?;
+        r.bd()?;
+        r.bd()?;
+    }
     if ver >= Version::R2007 {
         r.b()?;
         r.b()?;
@@ -755,6 +786,20 @@ fn viewport(r: &mut Bits, s: Option<&mut Bits>, ver: Version, tail: &mut TailHan
     let center = r.bd3()?;
     let width = r.bd()?;
     let height = r.bd()?;
+    if ver < Version::R2000 {
+        // R13-R14 store the view of a viewport elsewhere (not decoded): no view, no frozen layers.
+        return Ok(Kind::Viewport {
+            center: xy(center),
+            width,
+            height,
+            view_center: [0.0; 2],
+            view_height: 0.0,
+            twist: 0.0,
+            status: 0,
+            frozen_layers: Vec::new(),
+            clip_boundary: 0,
+        });
+    }
     r.bd3()?; // target
     r.bd3()?; // direction
     let twist = r.bd()?;

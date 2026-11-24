@@ -58,7 +58,7 @@ fn load(path: &Path, tx: &mpsc::Sender<LoadMsg>, ctx: &egui::Context) -> Result<
     let ms = drawing
         .blocks
         .values()
-        .find(|b| b.name == "*Model_Space")
+        .find(|b| b.name.eq_ignore_ascii_case("*Model_Space"))
         .map(|b| b.handle)
         .ok_or_else(|| "the file has no model space (*Model_Space)".to_string())?;
     phase("Building the scene");

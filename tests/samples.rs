@@ -15,7 +15,7 @@ fn classes_of_every_version() {
         eprintln!("skipped: no samples in {}", dir.display());
         return;
     }
-    for magic in ["AC1015", "AC1018", "AC1021", "AC1024", "AC1027", "AC1032"] {
+    for magic in ["AC1014", "AC1015", "AC1018", "AC1021", "AC1024", "AC1027", "AC1032"] {
         let path = dir.join(format!("sample_{magic}.dwg"));
         let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let c = Container::parse(&raw).unwrap_or_else(|e| panic!("{magic}: {e:?}"));
