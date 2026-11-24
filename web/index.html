@@ -300,7 +300,7 @@ ${COLOR_GLSL}
 out vec4 vCol;
 void main() {
   uint eff = (lay == uLayer0 && iLay.x != 65535u) ? iLay.x : lay;
-  if (!layerVisible(eff) || !layerVisible(iLay.y)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if (!layerVisible(eff)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vec2 w = iX * pos.x + iY * pos.y + iT;
   gl_Position = vec4((w - uCenter) * uScale, 0.0, 1.0);
   float m = col.a * 255.0;
@@ -325,7 +325,7 @@ ${COLOR_GLSL}
 out vec2 vUv;
 out vec4 vCol;
 void main() {
-  if (!layerVisible(lays.x) || !layerVisible(lays.y)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if (!layerVisible(lays.x)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   gl_Position = vec4((pos - uCenter) * uScale, 0.0, 1.0);
   vUv = uv;
   vCol = vec4(themed(col.rgb, lays.x), 1.0);
@@ -576,7 +576,6 @@ function instColor(i, c) {
 }
 const effLayer = (lay, inst) => (lay === meta.layer0 && data.instLay[inst * 2] !== NO_LAYER) ? data.instLay[inst * 2] : lay;
 const layerOn = (l) => l === NO_LAYER || !layers[l] || layers[l].on;
-const instOn = (inst) => layerOn(data.instLay[inst * 2 + 1]);
 
 function uploadLayers() {
   const n = Math.max(1, layers.length), px = new Uint8Array(n * 2 * 4);
@@ -780,7 +779,7 @@ function buildTexts() {
   add(3, new Uint16Array(lay), 2, gl.UNSIGNED_SHORT, false, true);
   gl.bindVertexArray(null);
 }
-const textVisible = (b) => settings.texts && layerOn(b.lay) && instOn(b.inst);
+const textVisible = (b) => settings.texts && layerOn(b.lay);
 
 // ---------- picking ----------
 let batchBox = [];   // local bbox per batch: [minx, miny, maxx, maxy]
@@ -813,7 +812,6 @@ function pick(wx, wy, tol, wantSeg = true) {
     if (!vCount) return;
     const bb = batchBox[bi];
     for (let i = iStart; i < iStart + iCount; i++) {
-      if (!instOn(i)) continue;
       const m = instXf(i);
       const det = m[0] * m[3] - m[1] * m[2];
       if (Math.abs(det) < 1e-30) continue;

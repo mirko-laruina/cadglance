@@ -702,7 +702,7 @@ impl Doc {
     }
 
     fn text_visible(&self, b: &TextBox, texts: bool) -> bool {
-        texts && self.layer_on(b.layer) && self.layer_on(b.top)
+        texts && self.layer_on(b.layer)
     }
 
     fn run_search(&mut self, texts: bool) {

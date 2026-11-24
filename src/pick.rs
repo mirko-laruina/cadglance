@@ -84,9 +84,6 @@ impl Picker {
             }
             let bb = self.boxes[bi];
             for i in b.inst_start..b.inst_start + b.inst_count {
-                if !visible(scene.inst_layers[i * 2 + 1]) {
-                    continue;
-                }
                 let m = inst_xf(scene, i);
                 let det = m[0] * m[3] - m[1] * m[2];
                 if det.abs() < 1e-30 {
