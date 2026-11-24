@@ -231,8 +231,17 @@ const CELL: u32 = 128;
 const BASE: f32 = 100.0;
 const PADX: f32 = 16.0;
 
-/// The viewer font: a common sans-serif TTF from the system, else egui's built-in font.
-pub fn load_font() -> (FontArc, String) {
+fn read_font(p: &std::path::Path) -> Option<FontArc> {
+    std::fs::read(p).ok().and_then(|b| FontArc::try_from_vec(b).ok())
+}
+
+/// The default viewer font: `custom` if it loads, else a common sans-serif TTF from the system,
+/// else egui's built-in font. Used for the text styles whose font the system does not have.
+pub fn load_font(custom: Option<&std::path::Path>) -> (FontArc, String) {
+    if let Some(f) = custom.and_then(read_font) {
+        let name = custom.and_then(|p| p.file_name()).map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        return (f, name);
+    }
     let candidates = [
         "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
@@ -244,7 +253,7 @@ pub fn load_font() -> (FontArc, String) {
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ];
     for p in candidates {
-        if let Some(f) = std::fs::read(p).ok().and_then(|b| FontArc::try_from_vec(b).ok()) {
+        if let Some(f) = read_font(std::path::Path::new(p)) {
             return (f, p.rsplit(['/', '\\']).next().unwrap_or(p).to_string());
         }
     }
@@ -253,41 +262,105 @@ pub fn load_font() -> (FontArc, String) {
     (FontArc::try_from_vec(data.font.to_vec()).expect("egui font is valid"), format!("{name} (egui)"))
 }
 
+/// Font files of the system by lower-case file name (scanned once).
+fn system_fonts() -> &'static HashMap<String, std::path::PathBuf> {
+    static INDEX: std::sync::OnceLock<HashMap<String, std::path::PathBuf>> = std::sync::OnceLock::new();
+    INDEX.get_or_init(|| {
+        use std::path::PathBuf;
+        let mut dirs: Vec<PathBuf> =
+            ["/usr/share/fonts", "/usr/local/share/fonts", "/Library/Fonts", "/System/Library/Fonts", "C:\\Windows\\Fonts"].map(PathBuf::from).into();
+        if let Some(h) = std::env::var_os("HOME").map(PathBuf::from) {
+            dirs.extend([h.join(".local/share/fonts"), h.join(".fonts"), h.join("Library/Fonts")]);
+        }
+        if let Some(l) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            dirs.push(l.join("Microsoft\\Windows\\Fonts"));
+        }
+        let mut m = HashMap::new();
+        while let Some(d) = dirs.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.flatten() {
+                // file_type does not follow symlinks: no directory loops
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    dirs.push(e.path());
+                } else {
+                    m.entry(e.file_name().to_string_lossy().to_lowercase()).or_insert_with(|| e.path());
+                }
+            }
+        }
+        m
+    })
+}
+
+/// Font files of the system (TTF, OTF, TTC), sorted by file name: (file name, path).
+pub fn system_font_files() -> Vec<(String, std::path::PathBuf)> {
+    let mut v: Vec<(String, std::path::PathBuf)> = system_fonts()
+        .values()
+        .filter(|p| p.extension().is_some_and(|e| matches!(e.to_string_lossy().to_lowercase().as_str(), "ttf" | "otf" | "ttc")))
+        .filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), p.clone())))
+        .collect();
+    v.sort_by_key(|(n, _)| n.to_lowercase());
+    v
+}
+
+/// The font a text style asks for ("arial.ttf", "Arial", a full path), when the system has it.
+/// SHX fonts are AutoCAD's own vector fonts: never found.
+fn style_font(name: &str) -> Option<FontArc> {
+    let n = name.trim().to_lowercase();
+    let file = n.rsplit(['/', '\\']).next()?;
+    if file.is_empty() || file.ends_with(".shx") {
+        return None;
+    }
+    let idx = system_fonts();
+    let p = idx.get(file).or_else(|| if file.contains('.') { None } else { idx.get(&format!("{file}.ttf")) })?;
+    read_font(p)
+}
+
+/// (uv0, uv1, advance px)
+type Glyph = ([f32; 2], [f32; 2], f64);
+
 struct Atlas {
-    font: FontArc,
-    cap: f64,
-    /// char -> (uv0, uv1, advance px)
-    glyphs: HashMap<char, ([f32; 2], [f32; 2], f64)>,
+    /// Index 0: the default font.
+    fonts: Vec<FontArc>,
+    caps: Vec<f64>,
+    /// (font, char) -> (uv0, uv1, advance px)
+    glyphs: HashMap<(usize, char), Glyph>,
     width: u32,
     height: u32,
     /// RGBA levels, largest first.
     levels: Vec<Vec<u8>>,
 }
 
-impl Metrics for Atlas {
+/// Metrics of one font of the atlas.
+struct FontView<'a>(&'a Atlas, usize);
+
+impl Metrics for FontView<'_> {
     fn advance(&self, ch: char) -> Option<f64> {
-        self.glyphs.get(&ch).map(|g| g.2).or_else(|| {
-            let id = self.font.glyph_id(ch);
-            (id.0 != 0 || ch == ' ').then(|| self.font.as_scaled(PxScale::from(FONT_PX)).h_advance(id) as f64)
+        self.0.glyphs.get(&(self.1, ch)).map(|g| g.2).or_else(|| {
+            let font = &self.0.fonts[self.1];
+            let id = font.glyph_id(ch);
+            (id.0 != 0 || ch == ' ').then(|| font.as_scaled(PxScale::from(FONT_PX)).h_advance(id) as f64)
         })
     }
     fn fallback_advance(&self) -> f64 {
         FONT_PX as f64 * 0.5
     }
     fn cap(&self) -> f64 {
-        self.cap
+        self.0.caps[self.1]
     }
 }
 
 impl Atlas {
-    fn build(font: FontArc, chars: &[char], max_tex: u32) -> Atlas {
-        let scaled = font.as_scaled(PxScale::from(FONT_PX));
-        let cap = font
-            .outline_glyph(font.glyph_id('H').with_scale(PxScale::from(FONT_PX)))
-            .map(|o| (o.px_bounds().max.y - o.px_bounds().min.y) as f64)
-            .filter(|c| *c > 0.0)
-            .unwrap_or(FONT_PX as f64 * 0.716);
-        let drawable: Vec<char> = chars.iter().copied().filter(|c| font.glyph_id(*c).0 != 0).collect();
+    fn build(fonts: Vec<FontArc>, chars: &[(usize, char)], max_tex: u32) -> Atlas {
+        let caps = fonts
+            .iter()
+            .map(|font| {
+                font.outline_glyph(font.glyph_id('H').with_scale(PxScale::from(FONT_PX)))
+                    .map(|o| (o.px_bounds().max.y - o.px_bounds().min.y) as f64)
+                    .filter(|c| *c > 0.0)
+                    .unwrap_or(FONT_PX as f64 * 0.716)
+            })
+            .collect();
+        let drawable: Vec<(usize, char)> = chars.iter().copied().filter(|(f, c)| fonts[*f].glyph_id(*c).0 != 0).collect();
         let cols = (max_tex / CELL).clamp(1, 32);
         let rows = (drawable.len() as u32).div_ceil(cols).max(1);
         let (width, height) = (cols * CELL, rows * CELL);
@@ -296,8 +369,9 @@ impl Atlas {
             p[..3].copy_from_slice(&[255, 255, 255]);
         }
         let mut glyphs = HashMap::new();
-        for (i, &ch) in drawable.iter().enumerate() {
+        for (i, &(fi, ch)) in drawable.iter().enumerate() {
             let (x, y) = ((i as u32 % cols) * CELL, (i as u32 / cols) * CELL);
+            let font = &fonts[fi];
             let id = font.glyph_id(ch);
             let g = id.with_scale_and_position(PxScale::from(FONT_PX), ab_glyph::point(x as f32 + PADX, y as f32 + BASE));
             if let Some(o) = font.outline_glyph(g) {
@@ -313,8 +387,8 @@ impl Atlas {
             }
             let (w, h) = (width as f32, height as f32);
             glyphs.insert(
-                ch,
-                ([x as f32 / w, y as f32 / h], [(x + CELL) as f32 / w, (y + CELL) as f32 / h], scaled.h_advance(id) as f64),
+                (fi, ch),
+                ([x as f32 / w, y as f32 / h], [(x + CELL) as f32 / w, (y + CELL) as f32 / h], font.as_scaled(PxScale::from(FONT_PX)).h_advance(id) as f64),
             );
         }
         // mipmaps: 2x2 box filter on alpha
@@ -337,19 +411,28 @@ impl Atlas {
             levels.push(next);
             (lw, lh) = (nw, nh);
         }
-        Atlas { font, cap, glyphs, width, height, levels }
+        Atlas { fonts, caps, glyphs, width, height, levels }
     }
 }
 
 /// Text vertices (24 bytes each: pos f32x2, uv f32x2, rgba u8x4, layers u16x2) and boxes.
-fn text_mesh(scene: &Scene, atlas: &Atlas) -> (Vec<u8>, u32, Vec<TextBox>) {
-    let ratios = textlayout::style_ratios(&scene.texts, atlas);
+/// `font_of`: style handle -> font index in the atlas (missing: the default font).
+fn text_mesh(scene: &Scene, atlas: &Atlas, font_of: &HashMap<u64, usize>) -> (Vec<u8>, u32, Vec<TextBox>) {
+    let fi = |t: &crate::geom::TextItem| font_of.get(&t.style).copied().unwrap_or(0);
+    // calibration per font: each style has one font, so the ratio maps do not overlap
+    let mut ratios = HashMap::new();
+    for f in 0..atlas.fonts.len() {
+        let texts: Vec<_> = scene.texts.iter().filter(|t| fi(t) == f).cloned().collect();
+        ratios.extend(textlayout::style_ratios(&texts, &FontView(atlas, f)));
+    }
     let mut out = Vec::new();
     let mut count = 0u32;
     let mut boxes = Vec::new();
     for (ti, t) in scene.texts.iter().enumerate() {
-        let scale = textlayout::text_scale(t, &ratios, atlas);
-        let l = textlayout::layout(t, &scene.styles, atlas, scale);
+        let f = fi(t);
+        let m = FontView(atlas, f);
+        let scale = textlayout::text_scale(t, &ratios, &m);
+        let l = textlayout::layout(t, &scene.styles, &m, scale);
         let b = &scene.blocks[t.batch];
         for i in b.inst_start..b.inst_start + b.inst_count {
             let m = inst_xf(scene, i);
@@ -366,7 +449,7 @@ fn text_mesh(scene: &Scene, atlas: &Atlas) -> (Vec<u8>, u32, Vec<TextBox>) {
                 apply(&m, p[0], p[1])
             };
             for g in &l.glyphs {
-                let Some(&(uv0, uv1, _)) = atlas.glyphs.get(&g.ch) else { continue };
+                let Some(&(uv0, uv1, _)) = atlas.glyphs.get(&(f, g.ch)) else { continue };
                 let (u0, u1) = (g.u - PADX as f64 * g.k * g.wf, g.u + (CELL as f64 - PADX as f64) * g.k * g.wf);
                 let (v0, v1) = (g.v - (CELL as f64 - BASE as f64) * g.k, g.v + BASE as f64 * g.k);
                 let (p00, p10, p01, p11) = (w(u0, v0), w(u1, v0), w(u0, v1), w(u1, v1));
@@ -455,10 +538,30 @@ impl GpuScene {
         });
 
         // text atlas
-        let mut chars: Vec<char> = scene.texts.iter().flat_map(|t| t.value.chars()).filter(|c| !c.is_whitespace()).collect();
+        // one font per style file, when the system has it; else the default font (index 0)
+        let mut fonts = vec![font];
+        let mut by_file: HashMap<String, usize> = HashMap::new();
+        let mut font_of: HashMap<u64, usize> = HashMap::new();
+        for (h, file) in &scene.style_fonts {
+            let f = *by_file.entry(file.trim().to_lowercase()).or_insert_with(|| {
+                style_font(file).map_or(0, |f| {
+                    fonts.push(f);
+                    fonts.len() - 1
+                })
+            });
+            font_of.insert(*h, f);
+        }
+        let mut chars: Vec<(usize, char)> = scene
+            .texts
+            .iter()
+            .flat_map(|t| {
+                let f = font_of.get(&t.style).copied().unwrap_or(0);
+                t.value.chars().filter(|c| !c.is_whitespace()).map(move |c| (f, c))
+            })
+            .collect();
         chars.sort_unstable();
         chars.dedup();
-        let atlas = Atlas::build(font, &chars, device.limits().max_texture_dimension_2d);
+        let atlas = Atlas::build(fonts, &chars, device.limits().max_texture_dimension_2d);
         let atlas_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("atlas"),
             size: wgpu::Extent3d { width: atlas.width, height: atlas.height, depth_or_array_layers: 1 },
@@ -515,7 +618,7 @@ impl GpuScene {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
-        let (text_bytes, text_vertices, text_boxes) = text_mesh(scene, &atlas);
+        let (text_bytes, text_vertices, text_boxes) = text_mesh(scene, &atlas, &font_of);
 
         // pipelines
         let scene_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {

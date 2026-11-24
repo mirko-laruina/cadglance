@@ -91,6 +91,8 @@ pub struct Scene {
     pub styles_json: String,
     /// Text styles: handle -> (width factor, oblique angle).
     pub styles: HashMap<u64, (f64, f64)>,
+    /// Text styles: handle -> font file ("romans.shx", "arial.ttf").
+    pub style_fonts: HashMap<u64, String>,
     pub triangles_drawn: u64,
 }
 
@@ -412,6 +414,7 @@ impl Scene {
             bbox: [world[0] - origin[0], world[1] - origin[1], world[2] - origin[0], world[3] - origin[1]],
             segments_drawn: 0,
             styles: d.styles.iter().map(|(h, s)| (*h, (s.width_factor, s.oblique))).collect(),
+            style_fonts: d.styles.iter().map(|(h, s)| (*h, s.font.clone())).collect(),
             styles_json: d
                 .styles
                 .iter()

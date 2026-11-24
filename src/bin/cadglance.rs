@@ -11,7 +11,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use cadglance::container::Version;
-use cadglance::desktop::{GpuScene, LayerLook, Look, Target, TextBox, View, load_font};
+use cadglance::desktop::{GpuScene, LayerLook, Look, Target, TextBox, View, load_font, system_font_files};
 use cadglance::drawing::Drawing;
 use cadglance::entities::P2;
 use cadglance::geom::Scene;
@@ -126,7 +126,7 @@ fn bench(path: &Path, software: bool) -> Result<(), String> {
     let samples = if info.device_type == wgpu::DeviceType::Cpu { 1 } else { 4 };
 
     let t = Instant::now();
-    let gpu = GpuScene::new(&device, &queue, &l.scene, samples, load_font().0);
+    let gpu = GpuScene::new(&device, &queue, &l.scene, samples, load_font(Settings::load().default_font.as_deref()).0);
     gpu.set_layers(&queue, &default_layers(&l.scene));
     queue.submit([]);
     let _ = device.poll(wgpu::PollType::wait_indefinitely());
@@ -511,6 +511,8 @@ struct Settings {
     snap: bool,
     panel: bool,
     recent: Vec<PathBuf>,
+    /// Font for the texts whose font the system does not have (SHX fonts always). None: a system sans-serif.
+    default_font: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -529,6 +531,7 @@ impl Default for Settings {
             snap: true,
             panel: true,
             recent: Vec::new(),
+            default_font: None,
         }
     }
 }
@@ -572,6 +575,7 @@ impl Settings {
                 "snap" => s.snap = b,
                 "panel" => s.panel = b,
                 "recent" => s.recent.push(PathBuf::from(v)),
+                "default_font" if !v.is_empty() => s.default_font = Some(PathBuf::from(v)),
                 _ => {}
             }
         }
@@ -595,6 +599,9 @@ impl Settings {
         out.push_str(&format!("label_size={}\noutline={}\n", self.label_size, self.outline));
         if let Some(c) = self.outline_color {
             out.push_str(&format!("outline_color={}\n", hex(c)));
+        }
+        if let Some(f) = &self.default_font {
+            out.push_str(&format!("default_font={}\n", f.display()));
         }
         for r in &self.recent {
             out.push_str(&format!("recent={}\n", r.display()));
@@ -776,6 +783,8 @@ struct App {
     adapter: String,
     samples: u32,
     font: Option<ab_glyph::FontArc>,
+    /// The default font changed: rebuild the open drawing's GPU scene on the next frame.
+    rebuild_gpu: bool,
     zoom_rect: Option<(Pos2, Pos2)>,
     screenshot_rect: Option<Rect>,
     /// PNG export: the UI around the drawing is hidden until the screenshot arrives.
@@ -901,7 +910,7 @@ impl App {
 
     fn finish_upload(&mut self, l: LoadedCpu, rs: &eframe::egui_wgpu::RenderState, ctx: &egui::Context) {
         let t = Instant::now();
-        let font = self.font.get_or_insert_with(|| load_font().0).clone();
+        let font = self.font.get_or_insert_with(|| load_font(self.settings.default_font.as_deref()).0).clone();
         let gpu = GpuScene::new(&rs.device, &rs.queue, &l.scene, self.samples, font);
         let layers: Vec<LayerState> = l
             .scene
@@ -988,6 +997,15 @@ impl eframe::App for App {
         }
 
         // loading: worker phases -> CPU data -> GPU upload on the next frame
+        if std::mem::take(&mut self.rebuild_gpu) {
+            let font = self.font.get_or_insert_with(|| load_font(self.settings.default_font.as_deref()).0).clone();
+            if let Some(d) = &mut self.doc {
+                // same texts in the same order: text box indices (search matches) stay valid
+                d.gpu = GpuScene::new(&rs.device, &rs.queue, &d.scene, self.samples, font);
+                d.upload_layers(&rs.queue);
+                d.version += 1;
+            }
+        }
         if let Some(l) = self.upload.take() {
             self.finish_upload(l, &rs, ctx);
             self.loading = None;
@@ -1471,6 +1489,7 @@ impl App {
         let before = self.settings.look();
         let texts_before = self.settings.texts;
         let overlay_before = (self.settings.sel, self.settings.label_size, self.settings.outline, self.settings.outline_color);
+        let font_before = self.settings.default_font.clone();
         let s = &mut self.settings;
         section(ui, p, "Theme");
         egui::Grid::new("themes").num_columns(2).spacing(vec2(6.0, 6.0)).show(ui, |ui| {
@@ -1548,6 +1567,35 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.checkbox(&mut s.texts, ""));
         });
         ui.horizontal(|ui| {
+            ui.label("Default text font");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let name = s.default_font.as_ref().and_then(|p| p.file_name()).map_or_else(|| "System".to_string(), |n| n.to_string_lossy().into_owned());
+                egui::ComboBox::from_id_salt("default_font")
+                    .selected_text(name)
+                    .width(150.0)
+                    .height(320.0)
+                    .show_ui(ui, |ui| {
+                        let id = ui.make_persistent_id("default_font_search");
+                        let mut q: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+                        ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search").desired_width(f32::INFINITY)).request_focus();
+                        let ql = q.to_lowercase();
+                        ui.data_mut(|d| d.insert_temp(id, q));
+                        // the list scrolls alone: the search field stays at the top. Fixed height: egui places
+                        // the popup by its last size, so a list shrunk by a search made it open small.
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).min_scrolled_height(280.0).max_height(280.0).show(ui, |ui| {
+                            if ql.is_empty() {
+                                ui.selectable_value(&mut s.default_font, None, "System");
+                            }
+                            for (n, p) in system_font_files().into_iter().filter(|(n, _)| n.to_lowercase().contains(&ql)) {
+                                ui.selectable_value(&mut s.default_font, Some(p), n);
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text("Font for the texts whose font is missing (SHX fonts always)");
+            });
+        });
+        ui.horizontal(|ui| {
             ui.label("Fills (solid hatches, solids)");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.checkbox(&mut s.fills, ""));
         });
@@ -1559,6 +1607,11 @@ impl App {
             *s = Settings { recent, ..Settings::default() };
         }
         let texts_now = s.texts;
+        if s.default_font != font_before {
+            s.save();
+            self.font = None;
+            self.rebuild_gpu = true;
+        }
         if (s.sel, s.label_size, s.outline, s.outline_color) != overlay_before {
             s.save();
         }
@@ -2125,6 +2178,7 @@ fn main() {
                 adapter,
                 samples,
                 font: None,
+                rebuild_gpu: false,
                 zoom_rect: None,
                 screenshot_rect: None,
                 capturing: false,
